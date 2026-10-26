@@ -2,6 +2,8 @@
 
 > nanishiteta (何してた) — what was I doing?
 
+**English** | [日本語](README.ja.md)
+
 An Emacs package that shows one buffer listing the directories you
 worked in and the files you edited by hand over the last few days.
 
@@ -81,7 +83,7 @@ All in the `nanishiteta` customization group.
 |------------------------------------|--------------------------------|
 | `nanishiteta-log-file`             | `~/.emacs.d/nanishiteta.log`   |
 | `nanishiteta-exclude-file`         | `~/.emacs.d/nanishiteta-exclude` |
-| `nanishiteta-exclude-regexps`      | authinfo, `.gpg`, `.git/`, `/tmp/`, ... |
+| `nanishiteta-exclude-regexps`      | authinfo, `.gpg`, `.git/`, `/tmp/`, `/private/tmp/`, ... |
 | `nanishiteta-span-days`            | 7                              |
 | `nanishiteta-gap-lookback-days`    | 90                             |
 | `nanishiteta-limit`                | 7                              |

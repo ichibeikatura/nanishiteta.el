@@ -519,7 +519,7 @@ ERT で `test/nanishiteta-test.el` を用意する。
 ### 15.1 管理対象
 
 リポジトリで管理するのは `nanishiteta.el`、`test/`、`README.md`、
-`CLAUDE.md`、`COPYING`、`.gitignore` のみ。
+`README.ja.md`、`CLAUDE.md`、`COPYING`、`.gitignore` のみ。
 
 `.gitignore` に最低限 `*.elc` と `/test/tmp/` を入れる。ログ
 （`~/.emacs.d/nanishiteta.log`）と除外ファイルは利用者の環境にあるもので、
