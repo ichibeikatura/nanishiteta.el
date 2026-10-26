@@ -97,6 +97,7 @@
                   "/home/user/src/notebook-api/.git/config"
                   "/home/user/src/notebook-api/.git/COMMIT_EDITMSG"
                   "/tmp/scratch.txt"
+                  "/private/tmp/scratch.txt"
                   "/home/user/.emacs.d/recentf"
                   "/home/user/.emacs.d/savehist"
                   "/home/user/.emacs.d/nanishiteta.log"
