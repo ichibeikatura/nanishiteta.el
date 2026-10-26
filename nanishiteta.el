@@ -410,15 +410,39 @@ span are found, or `nanishiteta-gap-lookback-days' are exhausted."
 
 ;;;; Sorting
 
+(defconst nanishiteta--sort-orders
+  '((recent age-asc count-desc)
+    (oldest age-desc count-desc)
+    (most count-desc age-asc)
+    (least count-asc age-asc)
+    (gap gap-desc age-asc))
+  "Sort orders cycled by `s', each (NAME FIRST-KEY SECOND-KEY).")
+
+(defvar-local nanishiteta--sort 'recent
+  "Name of the current sort order, from `nanishiteta--sort-orders'.")
+
+(defun nanishiteta--sort-key (key entry)
+  "Return the number KEY sorts ENTRY by, smaller first."
+  (pcase key
+    ('age-asc (nanishiteta-entry-age entry))
+    ('age-desc (- (nanishiteta-entry-age entry)))
+    ('count-asc (nanishiteta-entry-count entry))
+    ('count-desc (- (nanishiteta-entry-count entry)))
+    ('gap-desc (let ((gap (nanishiteta-entry-gap entry)))
+                 (if gap (- gap) -1.0e+INF)))))
+
 (defun nanishiteta--sort-entries (entries)
-  "Return ENTRIES sorted for display."
-  (sort (copy-sequence entries)
-        (lambda (a b)
-          (let ((age-a (nanishiteta-entry-age a))
-                (age-b (nanishiteta-entry-age b)))
-            (if (/= age-a age-b)
-                (< age-a age-b)
-              (> (nanishiteta-entry-count a) (nanishiteta-entry-count b)))))))
+  "Return ENTRIES sorted by the current sort order.
+Ties left by both keys are broken by path."
+  (let ((keys (cdr (assq nanishiteta--sort nanishiteta--sort-orders))))
+    (sort (copy-sequence entries)
+          (lambda (a b)
+            (cl-loop for key in keys
+                     for ka = (nanishiteta--sort-key key a)
+                     for kb = (nanishiteta--sort-key key b)
+                     unless (= ka kb) return (< ka kb)
+                     finally return (string< (nanishiteta-entry-path a)
+                                             (nanishiteta-entry-path b)))))))
 
 ;;;; Drawing
 
@@ -579,10 +603,11 @@ HIDDEN is the number of rows folded away, or nil when unfolded."
 
 (defun nanishiteta--header-label ()
   "Return the text at the right end of the first line."
-  (format "last %d day%s %s recent"
+  (format "last %d day%s %s %s"
           nanishiteta-span-days
           (if (= nanishiteta-span-days 1) "" "s")
-          (nanishiteta--glyph 'dot)))
+          (nanishiteta--glyph 'dot)
+          nanishiteta--sort))
 
 (defun nanishiteta--insert-header ()
   "Insert the first line of the buffer."
@@ -719,9 +744,19 @@ and lines holding nothing but such text are left out."
         nanishiteta--expanded nil)
   (nanishiteta--render))
 
+(defun nanishiteta-cycle-sort ()
+  "Sort by the next order: recent, oldest, most, least, gap."
+  (interactive)
+  (let ((names (mapcar #'car nanishiteta--sort-orders)))
+    (setq nanishiteta--sort (or (cadr (memq nanishiteta--sort names))
+                                (car names))
+          nanishiteta--expanded nil))
+  (nanishiteta--render))
+
 (defconst nanishiteta--keys
   '(("n/p" "move" ("n" . next-line) ("p" . previous-line))
     ("RET" "open" ("RET" . nanishiteta-open))
+    ("s" "sort" ("s" . nanishiteta-cycle-sort))
     ("g" "refresh" ("g" . nanishiteta-refresh))
     ("q" "quit" ("q" . quit-window))
     ("?" "help" ("?" . describe-mode)))

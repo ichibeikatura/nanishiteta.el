@@ -451,6 +451,52 @@
         (should (< (string-match-p "edited by hand" text)
                    (string-match-p "worked in" text)))))))
 
+;;;; Sorting
+
+(defconst nanishiteta-test-sort-entries
+  (list (nanishiteta-entry-create :path "a" :age 0 :count 5 :gap 3)
+        (nanishiteta-entry-create :path "b" :age 0 :count 9 :gap nil)
+        (nanishiteta-entry-create :path "c" :age 2 :count 9 :gap 30)
+        (nanishiteta-entry-create :path "d" :age 5 :count 1 :gap 30)
+        (nanishiteta-entry-create :path "e" :age 2 :count 1 :gap 3))
+  "Entries whose order differs in every sort, with ties on both keys.")
+
+(ert-deftest nanishiteta-test-sort-orders ()
+  (dolist (case '((recent "b" "a" "c" "e" "d")
+                  (oldest "d" "c" "e" "b" "a")
+                  (most "b" "c" "a" "e" "d")
+                  (least "e" "d" "a" "b" "c")
+                  (gap "b" "c" "d" "a" "e")))
+    (let ((nanishiteta--sort (car case)))
+      (should (equal (mapcar #'nanishiteta-entry-path
+                             (nanishiteta--sort-entries
+                              nanishiteta-test-sort-entries))
+                     (cdr case))))))
+
+(ert-deftest nanishiteta-test-sort-gap-nil-first ()
+  (nanishiteta-test-with-buffer 7
+    (setq nanishiteta--sort 'gap)
+    (nanishiteta--render)
+    (let ((dirs (nanishiteta-test-section-lines "worked in"))
+          (files (nanishiteta-test-section-lines "edited by hand")))
+      (should (string-match-p "notebook-api/" (nth 0 dirs)))
+      (should (string-match-p "old-crawler/" (nth 1 dirs)))
+      ;; Unknown gaps first, then the known gap of inbox.org.
+      (should (string-match-p "inbox.org" (car (last files))))
+      (should-not (cl-some (lambda (l) (string-match-p "inbox.org" l))
+                           (butlast files))))))
+
+(ert-deftest nanishiteta-test-cycle-sort ()
+  (nanishiteta-test-with-buffer 7
+    (let ((seen nil))
+      (dotimes (_ 6)
+        (let ((header (car (split-string (nanishiteta--visible-text) "\n"))))
+          (string-match "· \\([a-z]+\\)\\'" header)
+          (push (match-string 1 header) seen))
+        (nanishiteta-cycle-sort))
+      (should (equal (nreverse seen)
+                     '("recent" "oldest" "most" "least" "gap" "recent"))))))
+
 (ert-deftest nanishiteta-test-keymap ()
   (should (eq (lookup-key nanishiteta-list-mode-map (kbd "RET"))
               #'nanishiteta-open))
