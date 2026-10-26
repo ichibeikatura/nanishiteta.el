@@ -132,7 +132,8 @@ The collected data is in `nanishiteta--data'."
     (vterm-mode-hook . nanishiteta--record-term)
     (eshell-mode-hook . nanishiteta--record-term)
     (shell-mode-hook . nanishiteta--record-term)
-    (term-mode-hook . nanishiteta--record-term))
+    (term-mode-hook . nanishiteta--record-term)
+    (dired-mode-hook . nanishiteta--record-dired))
   "Hooks used for recording, and the function each one runs.")
 
 (defvar nanishiteta--exclude-file-regexps nil
@@ -186,9 +187,13 @@ A missing file counts as empty."
   "Record that a terminal was started in the current directory."
   (nanishiteta--record "term" (expand-file-name default-directory)))
 
+(defun nanishiteta--record-dired ()
+  "Record that the current directory was opened in Dired."
+  (nanishiteta--record "dired" (expand-file-name default-directory)))
+
 ;;;###autoload
 (define-minor-mode nanishiteta-mode
-  "Record visited, saved and reverted files and started terminals.
+  "Record visited, saved and reverted files, terminals and Dired.
 Each event appends one line to `nanishiteta-log-file'.  Turning the
 mode off removes the hooks and stops all recording."
   :global t
@@ -206,7 +211,8 @@ mode off removes the hooks and stops all recording."
   '(("visit" . files)
     ("save" . files)
     ("term" . directories)
-    ("revert" . directories))
+    ("revert" . directories)
+    ("dired" . directories))
   "Which list each known kind of event belongs to.
 Kinds missing here are skipped when reading.")
 
@@ -220,7 +226,8 @@ Kinds missing here are skipped when reading.")
                (:constructor nanishiteta-data-create)
                (:copier nil))
   "Everything the buffer shows, as collected from the log."
-  directories files hours days start-time end-time days-recorded approx)
+  directories files history-directories history-files
+  hours days start-time end-time days-recorded approx)
 
 (defvar-local nanishiteta--data nil
   "The `nanishiteta-data' the buffer shows.")
@@ -379,13 +386,16 @@ Only the first line is read."
                                       "\t")))))
         (and time (time-to-days time))))))
 
-(defun nanishiteta--approximate-entries ()
+(defun nanishiteta--approximate-entries (recorded)
   "Return (DIRECTORIES . FILES) entries made from file history.
 They come from `recentf-list' and `file-name-history', in that
-order, and have no time."
+order, and have no time.  Paths among the entries RECORDED are
+left out."
   (let ((seen (make-hash-table :test #'equal))
         (directories nil)
         (files nil))
+    (dolist (entry recorded)
+      (puthash (nanishiteta-entry-path entry) t seen))
     (dolist (name (append (bound-and-true-p recentf-list)
                           (bound-and-true-p file-name-history)))
       (when (and (stringp name) (file-name-absolute-p name))
@@ -466,15 +476,18 @@ span are found, or `nanishiteta-gap-lookback-days' are exhausted."
           (files (hash-table-values (cdr (assq 'files tables))))
           (first-day (nanishiteta--first-day)))
       (nanishiteta--count-by-hand directories files)
-      (let ((approx (and (null directories) (null files)
-                         (nanishiteta--approximate-entries))))
-        (when approx
-          (setq directories (car approx)
-                files (cdr approx)))
+      (let* ((approx (and (null directories) (null files)))
+             (history (and (or approx
+                               (null first-day)
+                               (< (- today first-day) span))
+                           (nanishiteta--approximate-entries
+                            (append directories files)))))
         (nanishiteta-data-create
-         :approx (and approx t)
+         :approx approx
          :directories directories
          :files files
+         :history-directories (car history)
+         :history-files (cdr history)
          :hours hours
          :days days
          :start-time (nanishiteta--day-start now (1- span))
@@ -506,19 +519,16 @@ span are found, or `nanishiteta-gap-lookback-days' are exhausted."
 
 (defun nanishiteta--sort-entries (entries)
   "Return ENTRIES sorted by the current sort order.
-Ties left by both keys are broken by path.  Entries made from file
-history have no time and keep their order."
+Ties left by both keys are broken by path."
   (let ((keys (cdr (assq nanishiteta--sort nanishiteta--sort-orders))))
-    (if (and entries (null (nanishiteta-entry-age (car entries))))
-        entries
-      (sort (copy-sequence entries)
-            (lambda (a b)
-              (cl-loop for key in keys
-                       for ka = (nanishiteta--sort-key key a)
-                       for kb = (nanishiteta--sort-key key b)
-                       unless (= ka kb) return (< ka kb)
-                       finally return (string< (nanishiteta-entry-path a)
-                                               (nanishiteta-entry-path b))))))))
+    (sort (copy-sequence entries)
+          (lambda (a b)
+            (cl-loop for key in keys
+                     for ka = (nanishiteta--sort-key key a)
+                     for kb = (nanishiteta--sort-key key b)
+                     unless (= ka kb) return (< ka kb)
+                     finally return (string< (nanishiteta-entry-path a)
+                                             (nanishiteta-entry-path b)))))))
 
 ;;;; Annotations
 
@@ -578,8 +588,17 @@ first.  Return nil if DIRECTORY is not in a git repository."
 (defvar-local nanishiteta--expanded nil
   "Sections currently shown without the row limit.")
 
-(defvar-local nanishiteta--width 80
+(defconst nanishiteta--max-width 80
+  "Most columns the contents take; wider windows center them.")
+
+(defvar-local nanishiteta--window-width 80
   "Window width the buffer was last drawn for.")
+
+(defvar-local nanishiteta--width 80
+  "Width the contents were last drawn in.")
+
+(defvar-local nanishiteta--margin 0
+  "Blank columns before every line, centering the contents.")
 
 (defconst nanishiteta--glyphs
   '((top "┌─" "+-") (branch "├─" "|-") (last "└─" "+-") (stem "│" "|")
@@ -598,8 +617,8 @@ The ASCII ones are used when `nanishiteta-ascii' is non-nil.")
   (propertize (nanishiteta--glyph name) 'nanishiteta-rule t))
 
 (defun nanishiteta--align (column)
-  "Return a space that extends to COLUMN."
-  (propertize " " 'display `(space :align-to ,column)))
+  "Return a space that extends to COLUMN of the contents."
+  (propertize " " 'display `(space :align-to ,(+ nanishiteta--margin column))))
 
 (defun nanishiteta--right-column ()
   "Return the last column text may use."
@@ -685,8 +704,11 @@ ANNOTATE non-nil means insert the annotations of ENTRY below it."
          (start nil))
     (insert (propertize prefix 'nanishiteta-rule t))
     (setq start (point))
-    (insert marker (nanishiteta--truncate-left (abbreviate-file-name path)
-                                               room))
+    (insert marker (let ((label (nanishiteta--truncate-left
+                                 (abbreviate-file-name path) room)))
+                     (if (nanishiteta-entry-age entry)
+                         label
+                       (propertize label 'face 'shadow))))
     (make-text-button start (point)
                       'type 'nanishiteta-entry
                       'nanishiteta-path path)
@@ -715,10 +737,12 @@ HIDDEN is the number of rows folded away, or nil when unfolded."
                       'nanishiteta-toggle section))
   (insert "\n"))
 
-(defun nanishiteta--insert-entries (section entries &optional annotate)
+(defun nanishiteta--insert-entries (section entries history &optional annotate)
   "Insert ENTRIES as the rows of SECTION, folded past `nanishiteta-limit'.
-ANNOTATE non-nil means insert the annotations of each row shown."
-  (let* ((sorted (nanishiteta--sort-entries entries))
+ENTRIES are sorted; HISTORY, entries from file history, follow them
+in their own order.  ANNOTATE non-nil means insert the annotations
+of each recorded row shown."
+  (let* ((sorted (append (nanishiteta--sort-entries entries) history))
          (total (length sorted))
          (foldable (> total nanishiteta-limit))
          (expanded (memq section nanishiteta--expanded))
@@ -739,14 +763,19 @@ ANNOTATE non-nil means insert the annotations of each row shown."
 
 (defun nanishiteta-section-directories ()
   "Insert the directories worked in."
-  (nanishiteta--insert-entries 'directories
-                               (nanishiteta-data-directories nanishiteta--data)
-                               t))
+  (nanishiteta--insert-entries
+   'directories
+   (nanishiteta-data-directories nanishiteta--data)
+   (nanishiteta-data-history-directories nanishiteta--data)
+   t))
 (put 'nanishiteta-section-directories 'nanishiteta-heading "worked in")
 
 (defun nanishiteta-section-files ()
   "Insert the files edited by hand."
-  (nanishiteta--insert-entries 'files (nanishiteta-data-files nanishiteta--data)))
+  (nanishiteta--insert-entries
+   'files
+   (nanishiteta-data-files nanishiteta--data)
+   (nanishiteta-data-history-files nanishiteta--data)))
 (put 'nanishiteta-section-files 'nanishiteta-heading "edited by hand")
 
 (defun nanishiteta--bar-cell (count most)
@@ -815,6 +844,12 @@ Both the keymap and the key line at the bottom are made from this.")
                 (format " %s day %d" (nanishiteta--glyph 'dot)
                         (nanishiteta-data-days-recorded data))
               "")
+            (if (and (not (nanishiteta-data-approx data))
+                     (or (nanishiteta-data-history-directories data)
+                         (nanishiteta-data-history-files data)))
+                (format " %s dim rows are from file history"
+                        (nanishiteta--glyph 'dot))
+              "")
             "\n")
     (insert " " (propertize (nanishiteta--key-line) 'face 'shadow) "\n")
     (put-text-property start (point) 'nanishiteta-rule t)))
@@ -838,13 +873,25 @@ Both the keymap and the key line at the bottom are made from this.")
                                    (string-width label)))
             label "\n")))
 
+(defun nanishiteta--available-width ()
+  "Return the width of the window showing the buffer, or 80."
+  (let ((window (get-buffer-window (current-buffer))))
+    (if window (window-body-width window) 80)))
+
 (defun nanishiteta--render ()
-  "Draw the buffer from `nanishiteta--data', keeping point's line."
+  "Draw the buffer from `nanishiteta--data', keeping point's line.
+The contents are at most `nanishiteta--max-width' columns wide and
+centered in the window."
   (let* ((window (get-buffer-window (current-buffer)))
          (line (line-number-at-pos))
          (column (current-column))
          (inhibit-read-only t))
-    (setq nanishiteta--width (if window (window-body-width window) 80))
+    (setq nanishiteta--window-width (nanishiteta--available-width)
+          nanishiteta--width (min nanishiteta--window-width
+                                  nanishiteta--max-width)
+          nanishiteta--margin (max 0 (/ (- nanishiteta--window-width
+                                           nanishiteta--width)
+                                        2)))
     (erase-buffer)
     (nanishiteta--insert-header)
     (dolist (section nanishiteta-sections)
@@ -855,6 +902,13 @@ Both the keymap and the key line at the bottom are made from this.")
           (insert " " (propertize heading 'face 'bold) "\n")))
       (funcall section))
     (insert (nanishiteta--rule 'bottom) "\n")
+    (when (> nanishiteta--margin 0)
+      (let ((margin (propertize (make-string nanishiteta--margin ?\s)
+                                'nanishiteta-rule t)))
+        (goto-char (point-min))
+        (while (not (eobp))
+          (insert margin)
+          (forward-line 1))))
     (goto-char (point-min))
     (forward-line (1- line))
     (move-to-column column)
@@ -902,7 +956,7 @@ and lines holding nothing but such text are left out."
   (with-current-buffer (window-buffer window)
     (when (and (derived-mode-p 'nanishiteta-list-mode)
                nanishiteta--data
-               (/= (window-body-width window) nanishiteta--width))
+               (/= (window-body-width window) nanishiteta--window-width))
       (nanishiteta--render))))
 
 ;;;; Commands

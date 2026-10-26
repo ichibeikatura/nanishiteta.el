@@ -117,13 +117,39 @@
       (nanishiteta--record-visit)
       (nanishiteta--record-save)
       (nanishiteta--record-revert)
-      (nanishiteta--record-term))
+      (nanishiteta--record-term)
+      (nanishiteta--record-dired))
     (should (equal (mapcar (lambda (l) (cdr (split-string l "\t")))
                            (nanishiteta-test-log-lines))
                    '(("visit" "/home/user/src/notebook-api/extract.py")
                      ("save" "/home/user/src/notebook-api/extract.py")
                      ("revert" "/home/user/src/notebook-api/extract.py")
-                     ("term" "/home/user/src/notebook-api/"))))))
+                     ("term" "/home/user/src/notebook-api/")
+                     ("dired" "/home/user/src/notebook-api/"))))))
+
+(ert-deftest nanishiteta-test-dired-recorded ()
+  (nanishiteta-test-with-files
+    (let ((dir (file-name-as-directory
+                (make-temp-file (expand-file-name "dired" nanishiteta-test-tmp-dir)
+                                t))))
+      (unwind-protect
+          (progn
+            (nanishiteta-mode 1)
+            (kill-buffer (dired-noselect dir))
+            (should (equal (mapcar (lambda (l) (cdr (split-string l "\t")))
+                                   (nanishiteta-test-log-lines))
+                           (list (list "dired" dir)))))
+        (nanishiteta-mode -1)
+        (delete-directory dir t)))))
+
+(ert-deftest nanishiteta-test-dired-in-directories ()
+  (nanishiteta-test-with-files
+    (nanishiteta-test-write-log
+     '(("2026-10-26T10:00:00+0900" "dired" "/home/user/Downloads/")))
+    (let ((data (nanishiteta--collect nanishiteta-test-now)))
+      (should (equal (nanishiteta-test-paths data 'directories)
+                     '("/home/user/Downloads/")))
+      (should (null (nanishiteta-data-files data))))))
 
 (ert-deftest nanishiteta-test-mode-toggles-hooks ()
   (let ((nanishiteta-exclude-file
@@ -782,11 +808,68 @@
   (nanishiteta-test-with-files
     (nanishiteta-test-write-log
      '(("2026-10-26T10:00:00+0900" "visit" "/home/user/org/inbox.org")))
-    (let ((file-name-history '("/home/user/org/other.org")))
+    (let ((file-name-history '("/home/user/org/other.org"
+                               "/home/user/org/inbox.org")))
       (let ((data (nanishiteta--collect nanishiteta-test-now)))
         (should-not (nanishiteta-data-approx data))
         (should (equal (nanishiteta-test-paths data 'files)
-                       '("/home/user/org/inbox.org")))))))
+                       '("/home/user/org/inbox.org")))
+        ;; The log is younger than the span, so history fills in below,
+        ;; without what was recorded.
+        (should (equal (mapcar #'nanishiteta-entry-path
+                               (nanishiteta-data-history-files data))
+                       '("/home/user/org/other.org")))))))
+
+(ert-deftest nanishiteta-test-history-below-records ()
+  (nanishiteta-test-with-files
+    (nanishiteta-test-write-log
+     '(("2026-10-26T10:00:00+0900" "visit" "/home/user/org/inbox.org")))
+    (let ((file-name-history '("/home/user/org/other.org")))
+      (with-temp-buffer
+        (nanishiteta-list-mode)
+        (setq nanishiteta--data (nanishiteta--collect nanishiteta-test-now))
+        (nanishiteta--render)
+        (let ((files (nanishiteta-test-section-lines "edited by hand")))
+          (should (string-match-p "\\` ├─ \\+ /home/user/org/inbox.org +today +1\\'"
+                                  (nth 0 files)))
+          (should (equal (nth 1 files) " └─ /home/user/org/other.org")))
+        (should (string-match-p "last 7 days · recent" (nanishiteta--visible-text)))
+        (should (string-match-p "^ uptime .* · day 0 · dim rows are from file history$"
+                                (nanishiteta--visible-text)))
+        (should (string-match-p "^ 00 " (nanishiteta--visible-text)))
+        (nanishiteta-test-goto "other.org")
+        (should (eq 'shadow (get-text-property (+ (point) 4) 'face)))
+        ;; Sorting works and keeps history at the bottom.
+        (nanishiteta-cycle-sort)
+        (should (equal (cadr (nanishiteta-test-section-lines "edited by hand"))
+                       " └─ /home/user/org/other.org"))))))
+
+(ert-deftest nanishiteta-test-no-history-once-span-is-covered ()
+  (let ((file-name-history '("/home/user/org/other.org")))
+    (let ((data (nanishiteta-test-collect)))
+      (should (null (nanishiteta-data-history-files data)))
+      (should (null (nanishiteta-data-history-directories data))))))
+
+(ert-deftest nanishiteta-test-centered ()
+  (cl-letf (((symbol-function 'nanishiteta--available-width) (lambda () 240)))
+    (nanishiteta-test-with-buffer 7
+      (should (= nanishiteta--margin 80))
+      (should (= nanishiteta--width 80))
+      (let ((lines (split-string (nanishiteta--visible-text) "\n")))
+        (dolist (line lines)
+          (unless (string-empty-p line)
+            (should (string-prefix-p (make-string 80 ?\s) line))
+            (should (<= (string-width line) 160))))
+        ;; The header label ends where the contents end.
+        (should (= 159 (string-width (car lines))))
+        (should (string-match-p (concat "\\`" (make-string 80 ?\s) "┌─ nanishiteta")
+                                (car lines))))
+      ;; Copying drops the margin.
+      (should (string-prefix-p "nanishiteta" (nanishiteta--plain-text)))))
+  (cl-letf (((symbol-function 'nanishiteta--available-width) (lambda () 60)))
+    (nanishiteta-test-with-buffer 7
+      (should (= nanishiteta--margin 0))
+      (should (= nanishiteta--width 60)))))
 
 (ert-deftest nanishiteta-test-keymap ()
   (should (eq (lookup-key nanishiteta-list-mode-map (kbd "RET"))

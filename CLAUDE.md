@@ -101,8 +101,11 @@ Claude Code も Cursor も git も、コアの語彙に出てこない。外部�
 | `save`   | `after-save-hook`            | 自分でファイルを保存した |
 | `term`   | 端末系メジャーモードのフック | そこで何かを起動した     |
 | `revert` | `after-revert-hook`          | 外から書き換わった       |
+| `dired`  | `dired-mode-hook`            | ディレクトリを開いた     |
 
-`term` のパスは `default-directory`、それ以外は `buffer-file-name`。
+`term` と `dired` のパスは `default-directory`、それ以外は
+`buffer-file-name`。ディレクトリを `find-file` で開いても `find-file-hook`
+は鳴らないので、`dired` で拾う。
 
 ## 5. 記録層
 
@@ -119,9 +122,11 @@ vterm-mode-hook       → term
 eshell-mode-hook      → term
 shell-mode-hook       → term
 term-mode-hook        → term
+dired-mode-hook       → dired
 ```
 
-端末系のフックはバッファ生成時に一度鳴るだけで、以後鳴らない。それでよい。
+端末系と Dired のフックはバッファ生成時に一度鳴るだけで、以後鳴らない。
+それでよい。
 
 ### 5.2 禁止事項
 
@@ -201,7 +206,7 @@ init.el で `setq` している利用者だと起動のたびに上書きされ�
 集計層が、kind を見て2つの系統に振り分ける。この対応表は集計層にのみ
 存在し、ログ側にも描画側にも書かない。
 
-- **directories** … `term` と `revert`。パスはディレクトリに正規化する
+- **directories** … `term` と `revert` と `dired`。パスはディレクトリに正規化する
   （`revert` はファイルパスなので親ディレクトリを取る）
 - **files** … `visit` と `save`。パスはファイルのまま
 
@@ -326,7 +331,8 @@ list of short strings, or nil.  Must not signal.")
   それ以外は何も付けない。`+` は「しばらく見ていない」であり、「初出で
   ある」とは主張しない（6.2）
 - 罫線の幅は `window-width` から生成し、`window-size-change-functions`
-  で再描画する
+  で再描画する。ただし中身の幅は最大 80 桁とし、それより広いウィンドウでは
+  左右に同じ幅の余白を取って中央に置く。右列がパスから離れすぎないため
 - バッファ名は `*nanishiteta*`、読み取り専用、point は先頭
 - 各エントリ行は `make-text-button` でボタンにする。これにより `TAB` /
   `S-TAB` の行間移動と `mouse-1` が自動的に効く
@@ -471,6 +477,18 @@ nanishiteta-sections              ; 上述
 
 どちらも存在しない環境があるので、ある分だけ使い、無ければ静かに縮退する。
 決して空のバッファと見出しだけを出さない。
+
+### 12.1 記録が期間に満たないあいだ
+
+記録が1件でも入ると上の近似は消えるが、そのままでは入れた直後の数日間が
+ほぼ空になる。そこで、ログの最初の1行（`day N`）が期間の日数に満たない
+あいだは、記録した行の下に履歴からの行を足す。
+
+- 記録した行を先に並べて `s` で並べ替え、履歴の行はその下に元の順序で置く
+- 記録した行と同じパスは履歴から外す
+- 履歴の行は薄い色（`shadow`）で描き、列とマーカーとアノテーションを付けない
+- 件数制限（9.2）は両方を合わせた行数にかかる
+- フッタ3行目の末尾に、薄い行が履歴である旨を添える。行は増やさない
 
 ## 13. 実装順序
 

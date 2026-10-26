@@ -49,8 +49,9 @@ stops all recording.
 └─
 ```
 
-- **worked in** lists directories where a terminal was started or a
-  file changed from outside Emacs, grouped by project root.
+- **worked in** lists directories where a terminal was started, a
+  directory was opened in Dired, or a file changed from outside Emacs,
+  grouped by project root.
   `2 by hand` counts the files below it that you visited or saved.
 - **edited by hand** lists files you visited or saved.
 - The right columns are how many days ago the row was last touched,
@@ -73,7 +74,10 @@ stops all recording.
 | `q`             | quit                                                |
 
 Until anything is recorded, the lists are made from `recentf-list`
-and `file-name-history`.
+and `file-name-history`.  While the log is younger than the span,
+those are added, dimmed, below the recorded rows.
+
+In a window wider than 80 columns the contents are centered.
 
 ## Settings
 
