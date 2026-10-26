@@ -89,6 +89,19 @@ unknown gap."
   :type 'natnum
   :group 'nanishiteta)
 
+(defcustom nanishiteta-annotation-limit 3
+  "Most commit subjects `nanishiteta-git-annotation' returns."
+  :type 'natnum
+  :group 'nanishiteta)
+
+(defcustom nanishiteta-annotation-functions '(nanishiteta-git-annotation)
+  "Functions that describe what happened in a directory.
+Each is called with (DIRECTORY START-TIME END-TIME) and returns a
+list of short strings, or nil.  Must not signal.  They are called
+only for the directories shown."
+  :type '(repeat function)
+  :group 'nanishiteta)
+
 (defcustom nanishiteta-sections
   '(nanishiteta-section-directories
     nanishiteta-section-files)
@@ -199,6 +212,9 @@ Kinds missing here are skipped when reading.")
                (:copier nil))
   "Everything the buffer shows, as collected from the log."
   directories files hours days start-time end-time approx)
+
+(defvar-local nanishiteta--data nil
+  "The `nanishiteta-data' the buffer shows.")
 
 (defvar nanishiteta--lines-read 0
   "Number of log lines read by the last `nanishiteta--collect'.")
@@ -444,13 +460,60 @@ Ties left by both keys are broken by path."
                      finally return (string< (nanishiteta-entry-path a)
                                              (nanishiteta-entry-path b)))))))
 
+;;;; Annotations
+
+(defun nanishiteta-git-annotation (directory start-time end-time)
+  "Return subjects of commits in DIRECTORY between START-TIME and END-TIME.
+At most `nanishiteta-annotation-limit' subjects are returned, newest
+first.  Return nil if DIRECTORY is not in a git repository."
+  (when (and (not (file-remote-p directory))
+             (file-directory-p directory)
+             (executable-find "git"))
+    (with-temp-buffer
+      (let ((default-directory (file-name-as-directory directory))
+            (coding-system-for-read 'utf-8)
+            (process-environment (cons "GIT_OPTIONAL_LOCKS=0"
+                                       process-environment)))
+        (when (eq 0 (ignore-errors
+                      (call-process
+                       "git" nil '(t nil) nil
+                       "-c" "log.showSignature=false" "log"
+                       (format "--max-count=%d" nanishiteta-annotation-limit)
+                       (concat "--since="
+                               (format-time-string "%FT%T%z" start-time))
+                       (concat "--until="
+                               (format-time-string "%FT%T%z" end-time))
+                       "--format=%s")))
+          (split-string (buffer-string) "\n" t))))))
+
+(defvar-local nanishiteta--annotations nil
+  "Hash table of annotations already computed, keyed by directory.")
+
+(defun nanishiteta--annotations (directory)
+  "Return the strings `nanishiteta-annotation-functions' give DIRECTORY."
+  (unless nanishiteta--annotations
+    (setq nanishiteta--annotations (make-hash-table :test #'equal)))
+  (let ((cached (gethash directory nanishiteta--annotations 'none)))
+    (if (not (eq cached 'none))
+        cached
+      (puthash directory
+               (cl-loop
+                for function in nanishiteta-annotation-functions
+                append (cl-remove-if-not
+                        #'stringp
+                        (condition-case nil
+                            (funcall function directory
+                                     (nanishiteta-data-start-time
+                                      nanishiteta--data)
+                                     (nanishiteta-data-end-time
+                                      nanishiteta--data))
+                          (error nil))))
+               nanishiteta--annotations))))
+
 ;;;; Drawing
 
 (defconst nanishiteta-buffer-name "*nanishiteta*"
   "Name of the buffer `nanishiteta' shows.")
-
-(defvar-local nanishiteta--data nil
-  "The `nanishiteta-data' the buffer shows.")
 
 (defvar-local nanishiteta--expanded nil
   "Sections currently shown without the row limit.")
@@ -527,8 +590,25 @@ Ties left by both keys are broken by path."
   'face 'shadow
   'help-echo "mouse-1, RET: show all or fewer")
 
-(defun nanishiteta--insert-entry (entry last)
-  "Insert the row for ENTRY.  LAST non-nil means it ends its list."
+(defun nanishiteta--insert-annotations (entry last)
+  "Insert the annotations of the directory ENTRY under its row.
+LAST non-nil means the row ends its list."
+  (let ((path (nanishiteta-entry-path entry))
+        (prefix (concat " " (if last " " (nanishiteta--glyph 'stem)) "  ")))
+    (dolist (note (nanishiteta--annotations path))
+      (insert (propertize prefix 'nanishiteta-rule t)
+              (propertize
+               (truncate-string-to-width
+                (concat (nanishiteta--glyph 'bullet) " " note)
+                (- (nanishiteta--right-column) (string-width prefix))
+                nil nil (nanishiteta--glyph 'ellipsis))
+               'face 'shadow
+               'nanishiteta-path path)
+              "\n"))))
+
+(defun nanishiteta--insert-entry (entry last &optional annotate)
+  "Insert the row for ENTRY.  LAST non-nil means it ends its list.
+ANNOTATE non-nil means insert the annotations of ENTRY below it."
   (let* ((prefix (concat " " (nanishiteta--glyph (if last 'last 'branch)) " "))
          (age (nanishiteta--format-age entry))
          (count (if (nanishiteta-entry-age entry)
@@ -555,7 +635,9 @@ Ties left by both keys are broken by path."
     (when (and by-hand (> by-hand 0))
       (insert (nanishiteta--align (+ (nanishiteta--count-end) 2))
               (format "%d by hand" by-hand)))
-    (insert "\n")))
+    (insert "\n")
+    (when (and annotate (nanishiteta-entry-age entry))
+      (nanishiteta--insert-annotations entry last))))
 
 (defun nanishiteta--insert-toggle (section hidden)
   "Insert the row folding or unfolding SECTION.
@@ -570,8 +652,9 @@ HIDDEN is the number of rows folded away, or nil when unfolded."
                       'nanishiteta-toggle section))
   (insert "\n"))
 
-(defun nanishiteta--insert-entries (section entries)
-  "Insert ENTRIES as the rows of SECTION, folded past `nanishiteta-limit'."
+(defun nanishiteta--insert-entries (section entries &optional annotate)
+  "Insert ENTRIES as the rows of SECTION, folded past `nanishiteta-limit'.
+ANNOTATE non-nil means insert the annotations of each row shown."
   (let* ((sorted (nanishiteta--sort-entries entries))
          (total (length sorted))
          (foldable (> total nanishiteta-limit))
@@ -585,7 +668,8 @@ HIDDEN is the number of rows folded away, or nil when unfolded."
                 (propertize "nothing yet" 'face 'shadow) "\n")
       (cl-loop for (entry . rest) on shown
                do (nanishiteta--insert-entry entry
-                                             (and (null rest) (not foldable))))
+                                             (and (null rest) (not foldable))
+                                             annotate))
       (when foldable
         (nanishiteta--insert-toggle
          section (and (not expanded) (- total nanishiteta-limit)))))))
@@ -593,7 +677,8 @@ HIDDEN is the number of rows folded away, or nil when unfolded."
 (defun nanishiteta-section-directories ()
   "Insert the directories worked in."
   (nanishiteta--insert-entries 'directories
-                               (nanishiteta-data-directories nanishiteta--data)))
+                               (nanishiteta-data-directories nanishiteta--data)
+                               t))
 (put 'nanishiteta-section-directories 'nanishiteta-heading "worked in")
 
 (defun nanishiteta-section-files ()
@@ -741,7 +826,8 @@ and lines holding nothing but such text are left out."
   (interactive)
   (nanishiteta--load-exclude-file)
   (setq nanishiteta--data (nanishiteta--collect)
-        nanishiteta--expanded nil)
+        nanishiteta--expanded nil
+        nanishiteta--annotations nil)
   (nanishiteta--render))
 
 (defun nanishiteta-cycle-sort ()
@@ -795,7 +881,8 @@ touched, and how many events it had.
         (nanishiteta-list-mode))
       (nanishiteta--load-exclude-file)
       (setq nanishiteta--data (nanishiteta--collect)
-            nanishiteta--expanded nil))
+            nanishiteta--expanded nil
+            nanishiteta--annotations nil))
     (pop-to-buffer-same-window buffer)
     (nanishiteta--render)
     (goto-char (point-min))))

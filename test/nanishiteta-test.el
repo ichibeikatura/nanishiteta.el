@@ -497,6 +497,91 @@
       (should (equal (nreverse seen)
                      '("recent" "oldest" "most" "least" "gap" "recent"))))))
 
+;;;; Annotations
+
+(defun nanishiteta-test-git (dir date &rest args)
+  "Run git with ARGS in DIR, dating any commit at DATE."
+  (let ((default-directory dir)
+        (process-environment
+         (append (list (concat "GIT_AUTHOR_DATE=" date)
+                       (concat "GIT_COMMITTER_DATE=" date)
+                       "GIT_CONFIG_NOSYSTEM=1"
+                       "HOME=/nonexistent")
+                 process-environment)))
+    (should (eq 0 (apply #'call-process "git" nil nil nil
+                         "-c" "user.name=Test" "-c" "user.email=test@example.invalid"
+                         "-c" "commit.gpgsign=false"
+                         args)))))
+
+(ert-deftest nanishiteta-test-git-annotation ()
+  (skip-unless (executable-find "git"))
+  (make-directory nanishiteta-test-tmp-dir t)
+  (let ((repo (file-name-as-directory
+               (make-temp-file (expand-file-name "repo" nanishiteta-test-tmp-dir)
+                               t))))
+    (unwind-protect
+        (progn
+          (nanishiteta-test-git repo "2026-10-01T10:00:00+0900" "init" "-q")
+          (dolist (commit '(("2026-09-01T10:00:00+0900" "start the crawler")
+                            ("2026-10-21T10:00:00+0900" "add the sample dataset")
+                            ("2026-10-22T10:00:00+0900" "batch the import endpoint")
+                            ("2026-10-23T10:00:00+0900" "fix the conversion table")
+                            ("2026-10-24T10:00:00+0900" "rename the export flag")))
+            (nanishiteta-test-git repo (car commit) "commit" "-q"
+                                  "--allow-empty" "-m" (cadr commit)))
+          (let ((start (nanishiteta--parse-time "2026-10-20T00:00:00+0900")))
+            (should (equal (nanishiteta-git-annotation repo start
+                                                       nanishiteta-test-now)
+                           '("rename the export flag"
+                             "fix the conversion table"
+                             "batch the import endpoint")))
+            (let ((nanishiteta-annotation-limit 10))
+              (should (= 4 (length (nanishiteta-git-annotation
+                                    repo start nanishiteta-test-now)))))))
+      (delete-directory repo t))))
+
+(ert-deftest nanishiteta-test-git-annotation-outside-repo ()
+  (should (null (nanishiteta-git-annotation "/home/user/no-such-dir/"
+                                            0 nanishiteta-test-now)))
+  (let ((dir (make-temp-file "nanishiteta-plain" t)))
+    (unwind-protect
+        (unless (locate-dominating-file dir ".git")
+          (should (null (nanishiteta-git-annotation
+                         dir 0 nanishiteta-test-now))))
+      (delete-directory dir t))))
+
+(ert-deftest nanishiteta-test-annotation-rows ()
+  (let* ((calls nil)
+         (nanishiteta-annotation-functions
+          (list (lambda (dir _start _end)
+                  (push dir calls)
+                  (and (string-match-p "notebook-api" dir)
+                       '("batch the import endpoint" "add the sample dataset")))
+                (lambda (&rest _) (error "Broken provider"))
+                (lambda (dir &rest _)
+                  (and (string-match-p "old-crawler" dir) '("fix the parser"))))))
+    (nanishiteta-test-with-buffer 7
+      (should (equal (nanishiteta-test-section-lines "worked in")
+                     (list (nth 0 (nanishiteta-test-section-lines "worked in"))
+                           " │  ● batch the import endpoint"
+                           " │  ● add the sample dataset"
+                           (nth 3 (nanishiteta-test-section-lines "worked in"))
+                           "    ● fix the parser")))
+      (should (= 2 (length calls)))
+      ;; Redrawing reuses what the providers said.
+      (nanishiteta-cycle-sort)
+      (should (= 2 (length calls)))
+      (nanishiteta-test-goto "● fix the parser")
+      (should (equal (nanishiteta--line-path) "/home/user/src/old-crawler/")))))
+
+(ert-deftest nanishiteta-test-annotations-only-for-shown-rows ()
+  (let* ((calls nil)
+         (nanishiteta-limit 1)
+         (nanishiteta-annotation-functions
+          (list (lambda (dir &rest _) (push dir calls) nil))))
+    (nanishiteta-test-with-buffer 7
+      (should (equal calls '("/home/user/src/notebook-api/"))))))
+
 (ert-deftest nanishiteta-test-keymap ()
   (should (eq (lookup-key nanishiteta-list-mode-map (kbd "RET"))
               #'nanishiteta-open))
