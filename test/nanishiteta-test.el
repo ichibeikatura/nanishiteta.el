@@ -657,6 +657,66 @@
   (should (string-suffix-p "q quit  ? help" (nanishiteta--key-line)))
   (should-not (string-match-p "TAB" (nanishiteta--key-line))))
 
+;;;; Copy and hide
+
+(ert-deftest nanishiteta-test-copy ()
+  (let ((nanishiteta-annotation-functions
+         (list (lambda (dir &rest _)
+                 (and (string-match-p "notebook-api" dir)
+                      '("batch the import endpoint"))))))
+    (nanishiteta-test-with-buffer 7
+      (let ((kill-ring nil))
+        (nanishiteta-copy)
+        (let ((text (car kill-ring)))
+          (should (string-match-p "\\`nanishiteta +last 7 days · recent\n\nworked in\n"
+                                  text))
+          (should (string-match-p
+                   "^ +\\+ /home/user/src/notebook-api/ +today +4  1 by hand$" text))
+          (should (string-match-p "^ +● batch the import endpoint$" text))
+          (should (string-match-p "^ +/home/user/org/inbox.org +2d +1\\'" text))
+          (should-not (string-match-p "[┌├└│▁▂▃▄▅▆▇█]" text))
+          (should-not (string-match-p "uptime\\|refresh" text)))))))
+
+(ert-deftest nanishiteta-test-hide ()
+  (nanishiteta-test-with-files
+    (let ((log nanishiteta-log-file)
+          (prompt nil))
+      (copy-file nanishiteta-test-fixture log t)
+      (nanishiteta-test-with-buffer 7
+        (let ((nanishiteta-log-file log))
+          ;; Declining leaves everything as it was.
+          (nanishiteta-test-goto "old-crawler")
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) nil)))
+            (nanishiteta-hide))
+          (should (= 0 (file-attribute-size
+                        (file-attributes nanishiteta-exclude-file))))
+          (cl-letf (((symbol-function 'yes-or-no-p)
+                     (lambda (p) (setq prompt p) t))
+                    ((symbol-function 'nanishiteta--collect)
+                     (let ((collect (symbol-function 'nanishiteta--collect)))
+                       (lambda (&rest _) (funcall collect nanishiteta-test-now)))))
+            (nanishiteta-hide))
+          (should (string-match-p (regexp-quote
+                                   (regexp-quote "/home/user/src/old-crawler/"))
+                                  prompt))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents nanishiteta-exclude-file)
+                           (buffer-string))
+                         (concat (regexp-quote "/home/user/src/old-crawler/")
+                                 "\n")))
+          (should-not (string-match-p "old-crawler"
+                                      (nanishiteta--visible-text)))
+          (should (string-match-p "notebook-api"
+                                  (nanishiteta--visible-text))))))))
+
+(ert-deftest nanishiteta-test-append-exclude-newline ()
+  (nanishiteta-test-with-files
+    (with-temp-file nanishiteta-exclude-file
+      (insert "first"))
+    (nanishiteta--append-exclude "second")
+    (nanishiteta--load-exclude-file)
+    (should (equal nanishiteta--exclude-file-regexps '("first" "second")))))
+
 (ert-deftest nanishiteta-test-keymap ()
   (should (eq (lookup-key nanishiteta-list-mode-map (kbd "RET"))
               #'nanishiteta-open))

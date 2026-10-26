@@ -749,6 +749,8 @@ each day takes the same whole number of cells."
   '(("n/p" "move" ("n" . next-line) ("p" . previous-line))
     ("RET" "open" ("RET" . nanishiteta-open))
     ("s" "sort" ("s" . nanishiteta-cycle-sort))
+    ("c" "copy" ("c" . nanishiteta-copy))
+    ("x" "hide" ("x" . nanishiteta-hide))
     ("g" "refresh" ("g" . nanishiteta-refresh))
     ("q" "quit" ("q" . quit-window))
     ("?" "help" ("?" . describe-mode)))
@@ -911,6 +913,63 @@ and lines holding nothing but such text are left out."
     (cond (button (button-activate button))
           (path (nanishiteta--visit path))
           (t (user-error "Nothing to open on this line")))))
+
+(defun nanishiteta--plain-text ()
+  "Return the lists of the buffer as plain text, without rules and bars."
+  (let* ((lines (split-string (nanishiteta--visible-text 'nanishiteta-rule)
+                              "\n"))
+         (indent (cl-loop for line in (cdr lines)
+                          unless (string-empty-p line)
+                          minimize (- (length line)
+                                      (length (string-trim-left line))))))
+    (string-trim
+     (replace-regexp-in-string
+      "\n\n\n+" "\n\n"
+      (mapconcat #'identity
+                 (cons (string-trim-left (car lines))
+                       (mapcar (lambda (line)
+                                 (substring line (min indent (length line))))
+                               (cdr lines)))
+                 "\n")))))
+
+(defun nanishiteta-copy ()
+  "Copy the lists, without rules and bars, to the kill ring."
+  (interactive)
+  (kill-new (nanishiteta--plain-text))
+  (message "Copied the list as text"))
+
+(defun nanishiteta--ends-without-newline-p (file)
+  "Return non-nil if FILE is not empty and its last byte is no newline."
+  (let ((size (and (file-exists-p file)
+                   (file-attribute-size (file-attributes file)))))
+    (and size (> size 0)
+         (with-temp-buffer
+           (set-buffer-multibyte nil)
+           (insert-file-contents-literally file nil (1- size) size)
+           (not (eq (char-after (point-min)) ?\n))))))
+
+(defun nanishiteta--append-exclude (regexp)
+  "Append REGEXP as a line of `nanishiteta-exclude-file'."
+  (let ((coding-system-for-write 'utf-8-unix)
+        (create-lockfiles nil))
+    (write-region (concat (if (nanishiteta--ends-without-newline-p
+                               nanishiteta-exclude-file)
+                              "\n" "")
+                          regexp "\n")
+                  nil nanishiteta-exclude-file t 'silent)))
+
+(defun nanishiteta-hide ()
+  "Stop recording and showing the path on this line.
+After confirmation, the quoted path is appended to
+`nanishiteta-exclude-file' and the buffer is redrawn."
+  (interactive)
+  (let ((path (nanishiteta--line-path)))
+    (unless path
+      (user-error "No path on this line"))
+    (let ((regexp (regexp-quote path)))
+      (when (yes-or-no-p (format "Hide %s? " regexp))
+        (nanishiteta--append-exclude regexp)
+        (nanishiteta-refresh)))))
 
 (defun nanishiteta-refresh ()
   "Read the log again and redraw."
