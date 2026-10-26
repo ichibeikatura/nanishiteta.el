@@ -779,11 +779,12 @@ of each recorded row shown."
 (put 'nanishiteta-section-files 'nanishiteta-heading "edited by hand")
 
 (defun nanishiteta--bar-cell (count most)
-  "Return the bar character for COUNT when the highest count is MOST."
+  "Return the bar character for COUNT when the highest count is MOST.
+Zero is the lowest character, dimmed; other counts use the rest."
   (let ((levels (nanishiteta--glyph 'bar)))
     (if (or (zerop count) (zerop most))
-        " "
-      (string (aref levels (1- (ceiling (* (length levels) count) most)))))))
+        (propertize (string (aref levels 0)) 'face 'shadow)
+      (string (aref levels (ceiling (* (1- (length levels)) count) most))))))
 
 (defun nanishiteta--footer-bars (hours days)
   "Return the lines of the hour bar and the day bar, or of HOURS alone.

@@ -646,10 +646,13 @@
                          (string-match " today\\'" day-line))))))))))
 
 (ert-deftest nanishiteta-test-bar-levels ()
-  (should (equal (nanishiteta--bar-cell 0 10) " "))
-  (should (equal (nanishiteta--bar-cell 10 10) "█"))
-  (should (equal (nanishiteta--bar-cell 1 10) "▁"))
-  (should (equal (nanishiteta--bar-cell 0 0) " ")))
+  (should (equal (nanishiteta--bar-cell 0 10) "▁"))
+  (should (eq (get-text-property 0 'face (nanishiteta--bar-cell 0 10)) 'shadow))
+  (should (equal (nanishiteta--bar-cell 0 0) "▁"))
+  (should (equal (nanishiteta--bar-cell 1 10) "▂"))
+  (should-not (get-text-property 0 'face (nanishiteta--bar-cell 1 10)))
+  (should (equal (nanishiteta--bar-cell 5 10) "▅"))
+  (should (equal (nanishiteta--bar-cell 10 10) "█")))
 
 (ert-deftest nanishiteta-test-days-recorded ()
   (should (= 117 (nanishiteta-data-days-recorded (nanishiteta-test-collect))))
@@ -762,7 +765,8 @@
         (should (string-match-p "last 7 days - recent$" text)))))
   (let ((nanishiteta-ascii t))
     (should (equal (nanishiteta--bar-cell 10 10) "#"))
-    (should (equal (nanishiteta--bar-cell 1 10) "."))))
+    (should (equal (nanishiteta--bar-cell 1 10) ":"))
+    (should (equal (nanishiteta--bar-cell 0 10) "."))))
 
 (defmacro nanishiteta-test-with-history (recent history &rest body)
   "Run BODY with an empty log and file history RECENT and HISTORY."
