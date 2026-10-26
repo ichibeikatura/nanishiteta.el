@@ -548,7 +548,8 @@ ERT で `test/nanishiteta-test.el` を用意する。
 
 ブランチは `main`。各段階のコミット後に `origin` へ push する。
 
-- `--force` を使わない。公開済みの履歴を書き換えない
+- 公開済みの履歴を書き換える（amend・rebase・force push）ときは、事前に
+  利用者の確認を取り、`--force` ではなく `--force-with-lease` を使う
 - `origin` が未設定のときは push を試みず、その旨を報告して止まる。
   リモートの URL を推測して設定しない
 - タグは打たない。リリース作業は仕様外
