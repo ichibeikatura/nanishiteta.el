@@ -1,0 +1,17 @@
+2026-07-01T09:00:00+0900	visit	/home/user/src/old-crawler/crawl.py
+2026-09-30T10:00:00+0900	term	/home/user/src/old-crawler/
+2026-10-18T09:00:00+0900	visit	/home/user/org/inbox.org
+2026-10-23T11:00:00+0900	term	/home/user/src/old-crawler/
+2026-10-23T11:05:00+0900	revert	/home/user/src/old-crawler/crawl.py
+2026-10-24T11:00:00+0900	save	/home/user/org/inbox.org	extra	fields
+2026-10-24T12:00:00+0900	focus	/home/user/org/inbox.org
+garbage line without tabs
+2026-10-24T12:30:00+0900	visit
+2026-10-25T09:00:00+0900	term	/home/user/src/notebook-api/
+2026-10-25T09:10:00+0900	revert	/home/user/src/notebook-api/extract.py
+2026-10-25T23:59:00+0900	visit	/home/user/org/late.org
+2026-10-26T00:01:00+0900	visit	/home/user/org/early.org
+2026-10-26T14:00:00+0900	visit	/home/user/src/notebook-api/extract.py
+2026-10-26T14:02:11+0900	term	/home/user/src/notebook-api/
+2026-10-26T15:30:02+0900	save	/home/user/src/notebook-api/extract.py
+2026-10-26T15:31:40+0900	revert	/home/user/src/notebook-api/README.md
