@@ -717,6 +717,76 @@
     (nanishiteta--load-exclude-file)
     (should (equal nanishiteta--exclude-file-regexps '("first" "second")))))
 
+;;;; ASCII and first run
+
+(ert-deftest nanishiteta-test-ascii ()
+  (let ((nanishiteta-ascii t)
+        (nanishiteta-annotation-functions
+         (list (lambda (dir &rest _)
+                 (and (string-match-p "notebook-api" dir) '("add the sample dataset"))))))
+    (nanishiteta-test-with-buffer 7
+      (let ((text (nanishiteta--visible-text)))
+        (should-not (string-match-p "[^[:ascii:]]" text))
+        (should (string-prefix-p "+- nanishiteta" text))
+        (should (string-match-p "^ |- \\+ /home/user/src/notebook-api/" text))
+        (should (string-match-p "^ |  \\* add the sample dataset$" text))
+        (should (string-match-p "^ \\+- /home/user/org/inbox.org" text))
+        (should (string-match-p "^ 00 [ .:|#]+ 23$" text))
+        (should (string-match-p "last 7 days - recent$" text)))))
+  (let ((nanishiteta-ascii t))
+    (should (equal (nanishiteta--bar-cell 10 10) "#"))
+    (should (equal (nanishiteta--bar-cell 1 10) "."))))
+
+(defmacro nanishiteta-test-with-history (recent history &rest body)
+  "Run BODY with an empty log and file history RECENT and HISTORY."
+  (declare (indent 2) (debug t))
+  `(nanishiteta-test-with-files
+     (let ((recentf-list ,recent)
+           (file-name-history ,history))
+       (with-temp-buffer
+         (nanishiteta-list-mode)
+         (setq nanishiteta--data (nanishiteta--collect nanishiteta-test-now))
+         (nanishiteta--render)
+         ,@body))))
+
+(defvar recentf-list)
+
+(ert-deftest nanishiteta-test-first-run ()
+  (nanishiteta-test-with-history
+      '("/home/user/org/book/chapter-3.org" "/home/user/src/csv-tools/")
+      '("/home/user/org/inbox.org" "/home/user/org/book/chapter-3.org"
+        "/tmp/scratch.txt" "relative.txt" "/home/user/.emacs.d/init.el")
+    (should (nanishiteta-data-approx nanishiteta--data))
+    (let ((text (nanishiteta--visible-text)))
+      (should (string-match-p "file history · s unavailable$" text))
+      (should (string-match-p "^ approximated from file history" text))
+      (should-not (string-match-p "^ 00 " text))
+      (should-not (string-match-p "today\\|\\+ " text)))
+    (should (equal (nanishiteta-test-section-lines "worked in")
+                   '(" └─ /home/user/src/csv-tools/")))
+    ;; History order is kept, duplicates and excluded paths dropped.
+    (should (equal (nanishiteta-test-section-lines "edited by hand")
+                   '(" ├─ /home/user/org/book/chapter-3.org"
+                     " ├─ /home/user/org/inbox.org"
+                     " └─ /home/user/.emacs.d/init.el")))
+    (should-error (nanishiteta-cycle-sort) :type 'user-error)))
+
+(ert-deftest nanishiteta-test-first-run-without-history ()
+  (nanishiteta-test-with-history nil nil
+    (let ((text (nanishiteta--visible-text)))
+      (should (string-match-p "nothing yet" text))
+      (should (string-match-p "^ approximated from file history" text)))))
+
+(ert-deftest nanishiteta-test-recorded-replaces-history ()
+  (nanishiteta-test-with-files
+    (nanishiteta-test-write-log
+     '(("2026-10-26T10:00:00+0900" "visit" "/home/user/org/inbox.org")))
+    (let ((file-name-history '("/home/user/org/other.org")))
+      (let ((data (nanishiteta--collect nanishiteta-test-now)))
+        (should-not (nanishiteta-data-approx data))
+        (should (equal (nanishiteta-test-paths data 'files)
+                       '("/home/user/org/inbox.org")))))))
+
 (ert-deftest nanishiteta-test-keymap ()
   (should (eq (lookup-key nanishiteta-list-mode-map (kbd "RET"))
               #'nanishiteta-open))

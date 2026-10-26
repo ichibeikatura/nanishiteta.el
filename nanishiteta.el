@@ -89,6 +89,13 @@ unknown gap."
   :type 'natnum
   :group 'nanishiteta)
 
+(defcustom nanishiteta-ascii nil
+  "Non-nil means draw rules and bars with ASCII characters only.
+Use this when box-drawing or block characters do not show as
+single-width in your font."
+  :type 'boolean
+  :group 'nanishiteta)
+
 (defcustom nanishiteta-annotation-limit 3
   "Most commit subjects `nanishiteta-git-annotation' returns."
   :type 'natnum
@@ -371,6 +378,26 @@ Only the first line is read."
                                       "\t")))))
         (and time (time-to-days time))))))
 
+(defun nanishiteta--approximate-entries ()
+  "Return (DIRECTORIES . FILES) entries made from file history.
+They come from `recentf-list' and `file-name-history', in that
+order, and have no time."
+  (let ((seen (make-hash-table :test #'equal))
+        (directories nil)
+        (files nil))
+    (dolist (name (append (bound-and-true-p recentf-list)
+                          (bound-and-true-p file-name-history)))
+      (when (and (stringp name) (file-name-absolute-p name))
+        (let ((path (expand-file-name name)))
+          (unless (or (gethash path seen)
+                      (string-match-p "[\t\n]" path)
+                      (nanishiteta--excluded-p path))
+            (puthash path t seen)
+            (if (directory-name-p path)
+                (push (nanishiteta-entry-create :path path) directories)
+              (push (nanishiteta-entry-create :path path) files))))))
+    (cons (nreverse directories) (nreverse files))))
+
 (defun nanishiteta--collect (&optional now)
   "Read the log and return a `nanishiteta-data' for the span ending at NOW.
 NOW defaults to the current time.  The log is read from its end
@@ -438,14 +465,20 @@ span are found, or `nanishiteta-gap-lookback-days' are exhausted."
           (files (hash-table-values (cdr (assq 'files tables))))
           (first-day (nanishiteta--first-day)))
       (nanishiteta--count-by-hand directories files)
-      (nanishiteta-data-create
-       :directories directories
-       :files files
-       :hours hours
-       :days days
-       :start-time (nanishiteta--day-start now (1- span))
-       :end-time now
-       :days-recorded (and first-day (- today first-day))))))
+      (let ((approx (and (null directories) (null files)
+                         (nanishiteta--approximate-entries))))
+        (when approx
+          (setq directories (car approx)
+                files (cdr approx)))
+        (nanishiteta-data-create
+         :approx (and approx t)
+         :directories directories
+         :files files
+         :hours hours
+         :days days
+         :start-time (nanishiteta--day-start now (1- span))
+         :end-time now
+         :days-recorded (and first-day (- today first-day)))))))
 
 ;;;; Sorting
 
@@ -472,16 +505,19 @@ span are found, or `nanishiteta-gap-lookback-days' are exhausted."
 
 (defun nanishiteta--sort-entries (entries)
   "Return ENTRIES sorted by the current sort order.
-Ties left by both keys are broken by path."
+Ties left by both keys are broken by path.  Entries made from file
+history have no time and keep their order."
   (let ((keys (cdr (assq nanishiteta--sort nanishiteta--sort-orders))))
-    (sort (copy-sequence entries)
-          (lambda (a b)
-            (cl-loop for key in keys
-                     for ka = (nanishiteta--sort-key key a)
-                     for kb = (nanishiteta--sort-key key b)
-                     unless (= ka kb) return (< ka kb)
-                     finally return (string< (nanishiteta-entry-path a)
-                                             (nanishiteta-entry-path b)))))))
+    (if (and entries (null (nanishiteta-entry-age (car entries))))
+        entries
+      (sort (copy-sequence entries)
+            (lambda (a b)
+              (cl-loop for key in keys
+                       for ka = (nanishiteta--sort-key key a)
+                       for kb = (nanishiteta--sort-key key b)
+                       unless (= ka kb) return (< ka kb)
+                       finally return (string< (nanishiteta-entry-path a)
+                                               (nanishiteta-entry-path b))))))))
 
 ;;;; Annotations
 
@@ -545,13 +581,16 @@ first.  Return nil if DIRECTORY is not in a git repository."
   "Window width the buffer was last drawn for.")
 
 (defconst nanishiteta--glyphs
-  '((top . "┌─") (branch . "├─") (last . "└─") (stem . "│")
-    (bottom . "└─") (bullet . "●") (ellipsis . "…") (dot . "·"))
-  "Characters used to draw the buffer.")
+  '((top "┌─" "+-") (branch "├─" "|-") (last "└─" "+-") (stem "│" "|")
+    (bottom "└─" "+-") (bullet "●" "*") (ellipsis "…" "...") (dot "·" "-")
+    (bar "▁▂▃▄▅▆▇█" ".:|#"))
+  "Strings used to draw the buffer, as (NAME UNICODE ASCII).
+The ASCII ones are used when `nanishiteta-ascii' is non-nil.")
 
 (defun nanishiteta--glyph (name)
   "Return the string drawn for NAME."
-  (cdr (assq name nanishiteta--glyphs)))
+  (let ((glyph (cdr (assq name nanishiteta--glyphs))))
+    (if nanishiteta-ascii (nth 1 glyph) (nth 0 glyph))))
 
 (defun nanishiteta--rule (name)
   "Return the glyph NAME marked as a rule, left out when copying."
@@ -563,7 +602,7 @@ first.  Return nil if DIRECTORY is not in a git repository."
 
 (defun nanishiteta--right-column ()
   "Return the last column text may use."
-  (1- (max 60 nanishiteta--width)))
+  (1- (max 40 nanishiteta--width)))
 
 (defun nanishiteta--count-end ()
   "Return the column the count column ends at."
@@ -709,12 +748,9 @@ ANNOTATE non-nil means insert the annotations of each row shown."
   (nanishiteta--insert-entries 'files (nanishiteta-data-files nanishiteta--data)))
 (put 'nanishiteta-section-files 'nanishiteta-heading "edited by hand")
 
-(defconst nanishiteta--bar-levels "▁▂▃▄▅▆▇█"
-  "Characters for bar cells, from low to high.")
-
 (defun nanishiteta--bar-cell (count most)
   "Return the bar character for COUNT when the highest count is MOST."
-  (let ((levels nanishiteta--bar-levels))
+  (let ((levels (nanishiteta--glyph 'bar)))
     (if (or (zerop count) (zerop most))
         " "
       (string (aref levels (1- (ceiling (* (length levels) count) most)))))))
@@ -766,10 +802,13 @@ Both the keymap and the key line at the bottom are made from this.")
   "Insert the activity bars, uptime, days recorded and keys."
   (let ((start (point))
         (data nanishiteta--data))
-    (dolist (line (nanishiteta--footer-bars (nanishiteta-data-hours data)
-                                            (nanishiteta-data-days data)))
-      (when line
-        (insert line "\n")))
+    (if (nanishiteta-data-approx data)
+        (insert " approximated from file history;"
+                " recorded activity will replace it\n")
+      (dolist (line (nanishiteta--footer-bars (nanishiteta-data-hours data)
+                                              (nanishiteta-data-days data)))
+        (when line
+          (insert line "\n"))))
     (insert " uptime " (emacs-uptime "%dd%hh%z%mm")
             (if (nanishiteta-data-days-recorded data)
                 (format " %s day %d" (nanishiteta--glyph 'dot)
@@ -781,11 +820,13 @@ Both the keymap and the key line at the bottom are made from this.")
 
 (defun nanishiteta--header-label ()
   "Return the text at the right end of the first line."
-  (format "last %d day%s %s %s"
-          nanishiteta-span-days
-          (if (= nanishiteta-span-days 1) "" "s")
-          (nanishiteta--glyph 'dot)
-          nanishiteta--sort))
+  (if (nanishiteta-data-approx nanishiteta--data)
+      (format "file history %s s unavailable" (nanishiteta--glyph 'dot))
+    (format "last %d day%s %s %s"
+            nanishiteta-span-days
+            (if (= nanishiteta-span-days 1) "" "s")
+            (nanishiteta--glyph 'dot)
+            nanishiteta--sort)))
 
 (defun nanishiteta--insert-header ()
   "Insert the first line of the buffer."
@@ -981,8 +1022,11 @@ After confirmation, the quoted path is appended to
   (nanishiteta--render))
 
 (defun nanishiteta-cycle-sort ()
-  "Sort by the next order: recent, oldest, most, least, gap."
+  "Sort by the next order: recent, oldest, most, least, gap.
+Lists made from file history keep their order."
   (interactive)
+  (when (nanishiteta-data-approx nanishiteta--data)
+    (user-error "Sorting needs recorded activity"))
   (let ((names (mapcar #'car nanishiteta--sort-orders)))
     (setq nanishiteta--sort (or (cadr (memq nanishiteta--sort names))
                                 (car names))
