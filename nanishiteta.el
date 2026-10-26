@@ -104,7 +104,8 @@ only for the directories shown."
 
 (defcustom nanishiteta-sections
   '(nanishiteta-section-directories
-    nanishiteta-section-files)
+    nanishiteta-section-files
+    nanishiteta-section-footer)
   "Functions that each insert one section of the nanishiteta buffer.
 Each is called with no arguments and inserts its contents at point.
 The heading, taken from the function's `nanishiteta-heading'
@@ -211,7 +212,7 @@ Kinds missing here are skipped when reading.")
                (:constructor nanishiteta-data-create)
                (:copier nil))
   "Everything the buffer shows, as collected from the log."
-  directories files hours days start-time end-time approx)
+  directories files hours days start-time end-time days-recorded approx)
 
 (defvar-local nanishiteta--data nil
   "The `nanishiteta-data' the buffer shows.")
@@ -350,6 +351,26 @@ CACHE is a hash table remembering normalized directories."
                                           (nanishiteta-entry-path file)))
                        files))))
 
+(defun nanishiteta--first-day ()
+  "Return the day number of the first line of the log, or nil.
+Only the first line is read."
+  (when (file-readable-p nanishiteta-log-file)
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (let ((size 256))
+        (while (progn
+                 (erase-buffer)
+                 (insert-file-contents-literally nanishiteta-log-file nil 0 size)
+                 (goto-char (point-min))
+                 (and (not (search-forward "\n" nil t))
+                      (= (buffer-size) size)))
+          (setq size (* size 4))))
+      (let ((time (nanishiteta--parse-time
+                   (car (split-string (buffer-substring (point-min)
+                                                        (line-end-position))
+                                      "\t")))))
+        (and time (time-to-days time))))))
+
 (defun nanishiteta--collect (&optional now)
   "Read the log and return a `nanishiteta-data' for the span ending at NOW.
 NOW defaults to the current time.  The log is read from its end
@@ -414,7 +435,8 @@ span are found, or `nanishiteta-gap-lookback-days' are exhausted."
                            (- (nanishiteta-entry-first-day entry) day)))))
                (zerop (hash-table-count pending))))))))))
     (let ((directories (hash-table-values (cdr (assq 'directories tables))))
-          (files (hash-table-values (cdr (assq 'files tables)))))
+          (files (hash-table-values (cdr (assq 'files tables))))
+          (first-day (nanishiteta--first-day)))
       (nanishiteta--count-by-hand directories files)
       (nanishiteta-data-create
        :directories directories
@@ -422,7 +444,8 @@ span are found, or `nanishiteta-gap-lookback-days' are exhausted."
        :hours hours
        :days days
        :start-time (nanishiteta--day-start now (1- span))
-       :end-time now))))
+       :end-time now
+       :days-recorded (and first-day (- today first-day))))))
 
 ;;;; Sorting
 
@@ -686,6 +709,74 @@ ANNOTATE non-nil means insert the annotations of each row shown."
   (nanishiteta--insert-entries 'files (nanishiteta-data-files nanishiteta--data)))
 (put 'nanishiteta-section-files 'nanishiteta-heading "edited by hand")
 
+(defconst nanishiteta--bar-levels "▁▂▃▄▅▆▇█"
+  "Characters for bar cells, from low to high.")
+
+(defun nanishiteta--bar-cell (count most)
+  "Return the bar character for COUNT when the highest count is MOST."
+  (let ((levels nanishiteta--bar-levels))
+    (if (or (zerop count) (zerop most))
+        " "
+      (string (aref levels (1- (ceiling (* (length levels) count) most)))))))
+
+(defun nanishiteta--footer-bars (hours days)
+  "Return the lines of the hour bar and the day bar, or of HOURS alone.
+HOURS and DAYS are vectors of counts.  The day bar is nil when
+DAYS covers one day.  Both bars start at the same column, and
+each day takes the same whole number of cells."
+  (let* ((span (length days))
+         (day-label (format "%dd" span))
+         (width (max 2 (string-width day-label)))
+         (hour-most (apply #'max (append hours nil)))
+         (day-most (apply #'max (append days nil)))
+         (cell (max 1 (/ 24 span))))
+    (list (concat " " (format (format "%%-%ds" width) "00") " "
+                  (mapconcat (lambda (n) (nanishiteta--bar-cell n hour-most))
+                             hours "")
+                  " 23")
+          (when (> span 1)
+            (let ((bar (mapconcat
+                        (lambda (n)
+                          (apply #'concat
+                                 (make-list cell (nanishiteta--bar-cell
+                                                  n day-most))))
+                        days "")))
+              (concat " " (format (format "%%-%ds" width) day-label) " "
+                      bar (make-string (max 0 (- 24 (length bar))) ?\s)
+                      " today"))))))
+
+(defconst nanishiteta--keys
+  '(("n/p" "move" ("n" . next-line) ("p" . previous-line))
+    ("RET" "open" ("RET" . nanishiteta-open))
+    ("s" "sort" ("s" . nanishiteta-cycle-sort))
+    ("g" "refresh" ("g" . nanishiteta-refresh))
+    ("q" "quit" ("q" . quit-window))
+    ("?" "help" ("?" . describe-mode)))
+  "Keys of the nanishiteta buffer, as (LABEL DESCRIPTION (KEY . COMMAND)...).
+Both the keymap and the key line at the bottom are made from this.")
+
+(defun nanishiteta--key-line ()
+  "Return the line listing the keys, made from `nanishiteta--keys'."
+  (mapconcat (lambda (group) (concat (car group) " " (cadr group)))
+             nanishiteta--keys "  "))
+
+(defun nanishiteta-section-footer ()
+  "Insert the activity bars, uptime, days recorded and keys."
+  (let ((start (point))
+        (data nanishiteta--data))
+    (dolist (line (nanishiteta--footer-bars (nanishiteta-data-hours data)
+                                            (nanishiteta-data-days data)))
+      (when line
+        (insert line "\n")))
+    (insert " uptime " (emacs-uptime "%dd%hh%z%mm")
+            (if (nanishiteta-data-days-recorded data)
+                (format " %s day %d" (nanishiteta--glyph 'dot)
+                        (nanishiteta-data-days-recorded data))
+              "")
+            "\n")
+    (insert " " (propertize (nanishiteta--key-line) 'face 'shadow) "\n")
+    (put-text-property start (point) 'nanishiteta-rule t)))
+
 (defun nanishiteta--header-label ()
   "Return the text at the right end of the first line."
   (format "last %d day%s %s %s"
@@ -838,16 +929,6 @@ and lines holding nothing but such text are left out."
                                 (car names))
           nanishiteta--expanded nil))
   (nanishiteta--render))
-
-(defconst nanishiteta--keys
-  '(("n/p" "move" ("n" . next-line) ("p" . previous-line))
-    ("RET" "open" ("RET" . nanishiteta-open))
-    ("s" "sort" ("s" . nanishiteta-cycle-sort))
-    ("g" "refresh" ("g" . nanishiteta-refresh))
-    ("q" "quit" ("q" . quit-window))
-    ("?" "help" ("?" . describe-mode)))
-  "Keys of the nanishiteta buffer, as (LABEL DESCRIPTION (KEY . COMMAND)...).
-Both the keymap and the key line at the bottom are made from this.")
 
 (defvar nanishiteta-list-mode-map
   (let ((map (make-sparse-keymap)))

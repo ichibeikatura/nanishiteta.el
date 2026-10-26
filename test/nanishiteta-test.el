@@ -582,6 +582,81 @@
     (nanishiteta-test-with-buffer 7
       (should (equal calls '("/home/user/src/notebook-api/"))))))
 
+;;;; Footer
+
+(defun nanishiteta-test-bar-start (line)
+  "Return the column the bar in LINE starts at."
+  (string-match "\\` \\S-+ +" line)
+  (match-end 0))
+
+(ert-deftest nanishiteta-test-bar-cells ()
+  (dolist (span '(1 2 5 7 10 24 25 30))
+    (let* ((days (make-vector span 0))
+           (hours (make-vector 24 1)))
+      ;; Alternate empty and full days so every cell boundary shows.
+      (dotimes (i span) (aset days i (if (cl-oddp i) 0 10)))
+      (pcase-let ((`(,hour-line ,day-line)
+                   (nanishiteta--footer-bars hours days)))
+        (if (= span 1)
+            (should (null day-line))
+          (let* ((start (nanishiteta-test-bar-start hour-line))
+                 (cell (max 1 (/ 24 span)))
+                 (bar (substring day-line start (+ start (* cell span)))))
+            ;; Both bars start at the same column.
+            (should (= start (nanishiteta-test-bar-start day-line)))
+            ;; Every day takes the same whole number of cells.
+            (dotimes (i span)
+              (should (= 1 (length (delete-dups
+                                    (string-to-list
+                                     (substring bar (* i cell)
+                                                (* (1+ i) cell)))))))
+              (unless (= i 0)
+                (should-not (eq (aref bar (* i cell))
+                                (aref bar (1- (* i cell)))))))
+            ;; The remainder is left blank, so the end labels line up.
+            (when (<= span 24)
+              (should (= (string-match " 23\\'" hour-line)
+                         (string-match " today\\'" day-line))))))))))
+
+(ert-deftest nanishiteta-test-bar-levels ()
+  (should (equal (nanishiteta--bar-cell 0 10) " "))
+  (should (equal (nanishiteta--bar-cell 10 10) "█"))
+  (should (equal (nanishiteta--bar-cell 1 10) "▁"))
+  (should (equal (nanishiteta--bar-cell 0 0) " ")))
+
+(ert-deftest nanishiteta-test-days-recorded ()
+  (should (= 117 (nanishiteta-data-days-recorded (nanishiteta-test-collect))))
+  ;; Only the first line counts, even if a later line is older.
+  (nanishiteta-test-with-files
+    (nanishiteta-test-write-log
+     '(("2026-01-01T10:00:00+0900" "visit" "/home/user/org/inbox.org")
+       ("2025-01-01T10:00:00+0900" "visit" "/home/user/org/inbox.org")
+       ("2026-10-26T10:00:00+0900" "visit" "/home/user/org/inbox.org")))
+    (should (= 298 (nanishiteta-data-days-recorded
+                    (nanishiteta--collect nanishiteta-test-now))))
+    ;; The scan stopped long before reaching the first line.
+    (should (= 2 nanishiteta--lines-read)))
+  (nanishiteta-test-with-files
+    (should (null (nanishiteta-data-days-recorded
+                   (nanishiteta--collect nanishiteta-test-now))))))
+
+(ert-deftest nanishiteta-test-footer ()
+  (nanishiteta-test-with-buffer 7
+    (let* ((lines (split-string (nanishiteta--visible-text) "\n"))
+           (tail (last lines 5)))
+      (should (string-match-p "\\` 00 .* 23\\'" (nth 0 tail)))
+      (should (string-match-p "\\` 7d .* today\\'" (nth 1 tail)))
+      (should (string-match-p "\\` uptime .* · day 117\\'" (nth 2 tail)))
+      (should (equal (nth 3 tail) (concat " " (nanishiteta--key-line))))
+      (should (equal (nth 4 tail) "└─"))))
+  (nanishiteta-test-with-buffer 1
+    (should-not (string-match-p "^ 1d " (nanishiteta--visible-text)))))
+
+(ert-deftest nanishiteta-test-key-line-from-table ()
+  (should (string-prefix-p "n/p move  RET open  s sort" (nanishiteta--key-line)))
+  (should (string-suffix-p "q quit  ? help" (nanishiteta--key-line)))
+  (should-not (string-match-p "TAB" (nanishiteta--key-line))))
+
 (ert-deftest nanishiteta-test-keymap ()
   (should (eq (lookup-key nanishiteta-list-mode-map (kbd "RET"))
               #'nanishiteta-open))
