@@ -339,6 +339,126 @@
     (should (equal (nanishiteta-test-paths data 'files)
                    '("/home/user/src/notebook-api/extract.py")))))
 
+;;;; Drawing
+
+(defmacro nanishiteta-test-with-buffer (span &rest body)
+  "Draw the fixture with a span of SPAN days, then run BODY there."
+  (declare (indent 1) (debug t))
+  `(with-temp-buffer
+     (nanishiteta-list-mode)
+     (let ((nanishiteta-span-days ,span))
+       (setq nanishiteta--data (nanishiteta-test-collect ,span))
+       (nanishiteta--render)
+       ,@body)))
+
+(defun nanishiteta-test-goto (regexp)
+  "Move to the start of the first line matching REGEXP."
+  (goto-char (point-min))
+  (re-search-forward regexp)
+  (beginning-of-line))
+
+(defun nanishiteta-test-section-lines (heading)
+  "Return the visible lines of the section under HEADING."
+  (let* ((lines (split-string (nanishiteta--visible-text) "\n"))
+         (rest (cdr (member (concat " " heading) lines))))
+    (cl-loop for line in rest
+             until (not (string-prefix-p " " line))
+             collect line)))
+
+(defun nanishiteta-test-refresh ()
+  "Run `nanishiteta-refresh' on the fixture as of `nanishiteta-test-now'."
+  (let ((collect (symbol-function 'nanishiteta--collect))
+        (nanishiteta-log-file nanishiteta-test-fixture))
+    (cl-letf (((symbol-function 'nanishiteta--collect)
+               (lambda (&rest _) (funcall collect nanishiteta-test-now))))
+      (nanishiteta-refresh))))
+
+(ert-deftest nanishiteta-test-layout ()
+  (nanishiteta-test-with-buffer 7
+    (let ((text (nanishiteta--visible-text)))
+      (should (string-prefix-p "┌─ nanishiteta" text))
+      (should (string-match-p "last 7 days · recent$" text))
+      (should (< (string-match-p " worked in" text)
+                 (string-match-p " edited by hand" text))))
+    (let ((dirs (nanishiteta-test-section-lines "worked in")))
+      (should (equal (length dirs) 2))
+      (should (string-match-p "\\` ├─ \\+ /home/user/src/notebook-api/ +today +4  1 by hand\\'"
+                              (nth 0 dirs)))
+      (should (string-match-p "\\` └─ \\+23d /home/user/src/old-crawler/ +3d +2\\'"
+                              (nth 1 dirs))))
+    ;; The right columns line up whatever the path length.
+    (let ((files (nanishiteta-test-section-lines "edited by hand")))
+      (should (= (length (delete-dups
+                          (mapcar (lambda (l) (length l)) files)))
+                 1))
+      (should (string-match-p "\\` └─ /home/user/org/inbox.org +2d +1\\'"
+                              (car (last files)))))))
+
+(ert-deftest nanishiteta-test-span-one-shows-time ()
+  (nanishiteta-test-with-buffer 1
+    (should (string-match-p "last 1 day · recent" (nanishiteta--visible-text)))
+    (should (string-match-p "notebook-api/ +15:31 +2"
+                            (nanishiteta--visible-text)))))
+
+(ert-deftest nanishiteta-test-buttons ()
+  (nanishiteta-test-with-buffer 7
+    (nanishiteta-test-goto "old-crawler")
+    (let ((button (nanishiteta--line-button)))
+      (should button)
+      (should (equal (button-get button 'nanishiteta-path)
+                     "/home/user/src/old-crawler/")))
+    (goto-char (point-min))
+    (let ((paths nil) (button nil))
+      (while (setq button (next-button (point)))
+        (goto-char button)
+        (push (button-get button 'nanishiteta-path) paths))
+      (should (= (length paths) 6)))))
+
+(ert-deftest nanishiteta-test-limit-folds ()
+  (let ((nanishiteta-limit 2))
+    (nanishiteta-test-with-buffer 7
+      (let ((files (nanishiteta-test-section-lines "edited by hand")))
+        (should (= (length files) 3))
+        (should (equal (car (last files)) " └─ … 2 more")))
+      ;; Directories fit, so they are not folded.
+      (should (= 2 (length (nanishiteta-test-section-lines "worked in"))))
+      (nanishiteta-test-goto "… 2 more")
+      (nanishiteta-open)
+      (let ((files (nanishiteta-test-section-lines "edited by hand")))
+        (should (= (length files) 5))
+        (should (equal (car (last files)) " └─ … less")))
+      (should (looking-at-p ".*… less"))
+      (nanishiteta-open)
+      (should (= 3 (length (nanishiteta-test-section-lines "edited by hand"))))
+      ;; Unfolding does not survive a redraw from the log.
+      (nanishiteta-test-goto "… 2 more")
+      (nanishiteta-open)
+      (nanishiteta-test-refresh)
+      (should (= 3 (length (nanishiteta-test-section-lines "edited by hand")))))))
+
+(ert-deftest nanishiteta-test-sections-list ()
+  (let ((nanishiteta-sections (remq 'nanishiteta-section-files
+                                    nanishiteta-sections)))
+    (nanishiteta-test-with-buffer 7
+      (should (string-match-p "worked in" (nanishiteta--visible-text)))
+      (should-not (string-match-p "edited by hand"
+                                  (nanishiteta--visible-text)))
+      (should-not (string-match-p "inbox.org" (nanishiteta--visible-text)))))
+  (let ((nanishiteta-sections '(nanishiteta-section-files
+                                nanishiteta-section-directories)))
+    (nanishiteta-test-with-buffer 7
+      (let ((text (nanishiteta--visible-text)))
+        (should (< (string-match-p "edited by hand" text)
+                   (string-match-p "worked in" text)))))))
+
+(ert-deftest nanishiteta-test-keymap ()
+  (should (eq (lookup-key nanishiteta-list-mode-map (kbd "RET"))
+              #'nanishiteta-open))
+  (should (eq (lookup-key nanishiteta-list-mode-map (kbd "g"))
+              #'nanishiteta-refresh))
+  (should (eq (lookup-key nanishiteta-list-mode-map (kbd "TAB"))
+              #'forward-button)))
+
 (provide 'nanishiteta-test)
 
 ;;; nanishiteta-test.el ends here

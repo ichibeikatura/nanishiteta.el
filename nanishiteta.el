@@ -84,6 +84,22 @@ unknown gap."
   :type 'natnum
   :group 'nanishiteta)
 
+(defcustom nanishiteta-limit 7
+  "Number of rows shown in each list before the rest is folded."
+  :type 'natnum
+  :group 'nanishiteta)
+
+(defcustom nanishiteta-sections
+  '(nanishiteta-section-directories
+    nanishiteta-section-files)
+  "Functions that each insert one section of the nanishiteta buffer.
+Each is called with no arguments and inserts its contents at point.
+The heading, taken from the function's `nanishiteta-heading'
+property, and the blank line before it are inserted by the caller.
+The collected data is in `nanishiteta--data'."
+  :type '(repeat function)
+  :group 'nanishiteta)
+
 ;;;; Recording
 
 (defconst nanishiteta--hooks
@@ -391,6 +407,363 @@ span are found, or `nanishiteta-gap-lookback-days' are exhausted."
        :days days
        :start-time (nanishiteta--day-start now (1- span))
        :end-time now))))
+
+;;;; Sorting
+
+(defun nanishiteta--sort-entries (entries)
+  "Return ENTRIES sorted for display."
+  (sort (copy-sequence entries)
+        (lambda (a b)
+          (let ((age-a (nanishiteta-entry-age a))
+                (age-b (nanishiteta-entry-age b)))
+            (if (/= age-a age-b)
+                (< age-a age-b)
+              (> (nanishiteta-entry-count a) (nanishiteta-entry-count b)))))))
+
+;;;; Drawing
+
+(defconst nanishiteta-buffer-name "*nanishiteta*"
+  "Name of the buffer `nanishiteta' shows.")
+
+(defvar-local nanishiteta--data nil
+  "The `nanishiteta-data' the buffer shows.")
+
+(defvar-local nanishiteta--expanded nil
+  "Sections currently shown without the row limit.")
+
+(defvar-local nanishiteta--width 80
+  "Window width the buffer was last drawn for.")
+
+(defconst nanishiteta--glyphs
+  '((top . "┌─") (branch . "├─") (last . "└─") (stem . "│")
+    (bottom . "└─") (bullet . "●") (ellipsis . "…") (dot . "·"))
+  "Characters used to draw the buffer.")
+
+(defun nanishiteta--glyph (name)
+  "Return the string drawn for NAME."
+  (cdr (assq name nanishiteta--glyphs)))
+
+(defun nanishiteta--rule (name)
+  "Return the glyph NAME marked as a rule, left out when copying."
+  (propertize (nanishiteta--glyph name) 'nanishiteta-rule t))
+
+(defun nanishiteta--align (column)
+  "Return a space that extends to COLUMN."
+  (propertize " " 'display `(space :align-to ,column)))
+
+(defun nanishiteta--right-column ()
+  "Return the last column text may use."
+  (1- (max 60 nanishiteta--width)))
+
+(defun nanishiteta--count-end ()
+  "Return the column the count column ends at."
+  (- (nanishiteta--right-column) 12))
+
+(defun nanishiteta--age-end ()
+  "Return the column the age column ends at."
+  (- (nanishiteta--count-end) 5))
+
+(defun nanishiteta--truncate-left (string width)
+  "Return STRING cut from the left to fit in WIDTH columns."
+  (if (<= (string-width string) width)
+      string
+    (let ((ellipsis (nanishiteta--glyph 'ellipsis))
+          (tail string))
+      (while (and (> (length tail) 0)
+                  (> (+ (string-width ellipsis) (string-width tail)) width))
+        (setq tail (substring tail 1)))
+      (concat ellipsis tail))))
+
+(defun nanishiteta--format-age (entry)
+  "Return the age column for ENTRY."
+  (let ((age (nanishiteta-entry-age entry)))
+    (cond ((null age) "")
+          ((<= nanishiteta-span-days 1)
+           (format-time-string "%H:%M" (nanishiteta-entry-last-time entry)))
+          ((= age 0) "today")
+          (t (format "%dd" age)))))
+
+(defun nanishiteta--format-marker (entry)
+  "Return the marker put before the path of ENTRY."
+  (let ((gap (nanishiteta-entry-gap entry)))
+    (cond ((null (nanishiteta-entry-age entry)) "")
+          ((null gap) "+ ")
+          ((> gap nanishiteta-span-days) (format "+%dd " gap))
+          (t ""))))
+
+(define-button-type 'nanishiteta-entry
+  'action #'nanishiteta--open-button
+  'follow-link t
+  'face nil
+  'help-echo "mouse-1, RET: open")
+
+(define-button-type 'nanishiteta-toggle
+  'action #'nanishiteta--toggle-button
+  'follow-link t
+  'face 'shadow
+  'help-echo "mouse-1, RET: show all or fewer")
+
+(defun nanishiteta--insert-entry (entry last)
+  "Insert the row for ENTRY.  LAST non-nil means it ends its list."
+  (let* ((prefix (concat " " (nanishiteta--glyph (if last 'last 'branch)) " "))
+         (age (nanishiteta--format-age entry))
+         (count (if (nanishiteta-entry-age entry)
+                    (number-to-string (nanishiteta-entry-count entry))
+                  ""))
+         (by-hand (nanishiteta-entry-by-hand entry))
+         (marker (nanishiteta--format-marker entry))
+         (path (nanishiteta-entry-path entry))
+         (room (- (nanishiteta--age-end) 6 (string-width prefix)
+                  (string-width marker)))
+         (start nil))
+    (insert (propertize prefix 'nanishiteta-rule t))
+    (setq start (point))
+    (insert marker (nanishiteta--truncate-left (abbreviate-file-name path)
+                                               room))
+    (make-text-button start (point)
+                      'type 'nanishiteta-entry
+                      'nanishiteta-path path)
+    (insert (nanishiteta--align (- (nanishiteta--age-end) (string-width age)))
+            age
+            (nanishiteta--align (- (nanishiteta--count-end)
+                                   (string-width count)))
+            count)
+    (when (and by-hand (> by-hand 0))
+      (insert (nanishiteta--align (+ (nanishiteta--count-end) 2))
+              (format "%d by hand" by-hand)))
+    (insert "\n")))
+
+(defun nanishiteta--insert-toggle (section hidden)
+  "Insert the row folding or unfolding SECTION.
+HIDDEN is the number of rows folded away, or nil when unfolded."
+  (insert (propertize (concat " " (nanishiteta--glyph 'last) " ")
+                      'nanishiteta-rule t))
+  (let ((start (point)))
+    (insert (nanishiteta--glyph 'ellipsis)
+            (if hidden (format " %d more" hidden) " less"))
+    (make-text-button start (point)
+                      'type 'nanishiteta-toggle
+                      'nanishiteta-toggle section))
+  (insert "\n"))
+
+(defun nanishiteta--insert-entries (section entries)
+  "Insert ENTRIES as the rows of SECTION, folded past `nanishiteta-limit'."
+  (let* ((sorted (nanishiteta--sort-entries entries))
+         (total (length sorted))
+         (foldable (> total nanishiteta-limit))
+         (expanded (memq section nanishiteta--expanded))
+         (shown (if (and foldable (not expanded))
+                    (cl-subseq sorted 0 nanishiteta-limit)
+                  sorted)))
+    (if (null shown)
+        (insert (propertize (concat " " (nanishiteta--glyph 'last) " ")
+                            'nanishiteta-rule t)
+                (propertize "nothing yet" 'face 'shadow) "\n")
+      (cl-loop for (entry . rest) on shown
+               do (nanishiteta--insert-entry entry
+                                             (and (null rest) (not foldable))))
+      (when foldable
+        (nanishiteta--insert-toggle
+         section (and (not expanded) (- total nanishiteta-limit)))))))
+
+(defun nanishiteta-section-directories ()
+  "Insert the directories worked in."
+  (nanishiteta--insert-entries 'directories
+                               (nanishiteta-data-directories nanishiteta--data)))
+(put 'nanishiteta-section-directories 'nanishiteta-heading "worked in")
+
+(defun nanishiteta-section-files ()
+  "Insert the files edited by hand."
+  (nanishiteta--insert-entries 'files (nanishiteta-data-files nanishiteta--data)))
+(put 'nanishiteta-section-files 'nanishiteta-heading "edited by hand")
+
+(defun nanishiteta--header-label ()
+  "Return the text at the right end of the first line."
+  (format "last %d day%s %s recent"
+          nanishiteta-span-days
+          (if (= nanishiteta-span-days 1) "" "s")
+          (nanishiteta--glyph 'dot)))
+
+(defun nanishiteta--insert-header ()
+  "Insert the first line of the buffer."
+  (let ((label (nanishiteta--header-label)))
+    (insert (nanishiteta--rule 'top) " "
+            (propertize "nanishiteta" 'face 'bold)
+            (nanishiteta--align (- (nanishiteta--right-column)
+                                   (string-width label)))
+            label "\n")))
+
+(defun nanishiteta--render ()
+  "Draw the buffer from `nanishiteta--data', keeping point's line."
+  (let* ((window (get-buffer-window (current-buffer)))
+         (line (line-number-at-pos))
+         (column (current-column))
+         (inhibit-read-only t))
+    (setq nanishiteta--width (if window (window-body-width window) 80))
+    (erase-buffer)
+    (nanishiteta--insert-header)
+    (dolist (section nanishiteta-sections)
+      (insert "\n")
+      (let ((heading (and (symbolp section)
+                          (get section 'nanishiteta-heading))))
+        (when heading
+          (insert " " (propertize heading 'face 'bold) "\n")))
+      (funcall section))
+    (insert (nanishiteta--rule 'bottom) "\n")
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (move-to-column column)
+    (when window
+      (set-window-point window (point)))))
+
+(defun nanishiteta--visible-text (&optional drop)
+  "Return the buffer text as it looks, with aligned spaces expanded.
+Text whose property DROP is non-nil becomes spaces of equal width,
+and lines holding nothing but such text are left out."
+  (let ((lines nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let ((pos (point))
+              (end (line-end-position))
+              (column 0)
+              (kept nil)
+              (dropped nil)
+              (out nil))
+          (while (< pos end)
+            (let* ((char (buffer-substring-no-properties pos (1+ pos)))
+                   (display (get-text-property pos 'display))
+                   (text (if (eq (car-safe display) 'space)
+                             (make-string
+                              (max 1 (- (plist-get (cdr display) :align-to)
+                                        column))
+                              ?\s)
+                           char)))
+              (if (and drop (get-text-property pos drop))
+                  (setq text (make-string (string-width text) ?\s)
+                        dropped t)
+                (unless (string-blank-p text)
+                  (setq kept t)))
+              (push text out)
+              (setq column (+ column (string-width text))
+                    pos (1+ pos))))
+          (when (or kept (not dropped))
+            (push (string-trim-right (apply #'concat (nreverse out))) lines))
+          (forward-line 1))))
+    (mapconcat #'identity (nreverse lines) "\n")))
+
+(defun nanishiteta--on-resize (window)
+  "Redraw the buffer of WINDOW if its width changed."
+  (with-current-buffer (window-buffer window)
+    (when (and (derived-mode-p 'nanishiteta-list-mode)
+               nanishiteta--data
+               (/= (window-body-width window) nanishiteta--width))
+      (nanishiteta--render))))
+
+;;;; Commands
+
+(defun nanishiteta--line-button ()
+  "Return the button on the current line, or nil."
+  (let ((button (next-button (line-beginning-position) t)))
+    (and button
+         (<= (button-start button) (line-end-position))
+         button)))
+
+(defun nanishiteta--line-path ()
+  "Return the path the current line is about, or nil."
+  (let ((pos (line-beginning-position))
+        (end (line-end-position))
+        (path nil))
+    (while (and (not path) (< pos end))
+      (setq path (get-text-property pos 'nanishiteta-path)
+            pos (1+ pos)))
+    path))
+
+(defun nanishiteta--visit (path)
+  "Visit PATH, with Dired if it is a directory."
+  (unless (file-exists-p path)
+    (user-error "No longer exists: %s" path))
+  (find-file path))
+
+(defun nanishiteta--open-button (button)
+  "Visit the path of BUTTON."
+  (nanishiteta--visit (button-get button 'nanishiteta-path)))
+
+(defun nanishiteta--toggle-button (button)
+  "Fold or unfold the section of BUTTON."
+  (let ((section (button-get button 'nanishiteta-toggle)))
+    (setq nanishiteta--expanded
+          (if (memq section nanishiteta--expanded)
+              (remq section nanishiteta--expanded)
+            (cons section nanishiteta--expanded)))
+    (nanishiteta--render)
+    (let ((pos (text-property-any (point-min) (point-max)
+                                  'nanishiteta-toggle section)))
+      (when pos
+        (goto-char pos)))))
+
+(defun nanishiteta-open ()
+  "Open the file or directory on this line, or fold or unfold the list."
+  (interactive)
+  (let ((button (nanishiteta--line-button))
+        (path (nanishiteta--line-path)))
+    (cond (button (button-activate button))
+          (path (nanishiteta--visit path))
+          (t (user-error "Nothing to open on this line")))))
+
+(defun nanishiteta-refresh ()
+  "Read the log again and redraw."
+  (interactive)
+  (nanishiteta--load-exclude-file)
+  (setq nanishiteta--data (nanishiteta--collect)
+        nanishiteta--expanded nil)
+  (nanishiteta--render))
+
+(defconst nanishiteta--keys
+  '(("n/p" "move" ("n" . next-line) ("p" . previous-line))
+    ("RET" "open" ("RET" . nanishiteta-open))
+    ("g" "refresh" ("g" . nanishiteta-refresh))
+    ("q" "quit" ("q" . quit-window))
+    ("?" "help" ("?" . describe-mode)))
+  "Keys of the nanishiteta buffer, as (LABEL DESCRIPTION (KEY . COMMAND)...).
+Both the keymap and the key line at the bottom are made from this.")
+
+(defvar nanishiteta-list-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map button-buffer-map)
+    (dolist (group nanishiteta--keys)
+      (dolist (binding (nthcdr 2 group))
+        (define-key map (kbd (car binding)) (cdr binding))))
+    map)
+  "Keymap of `nanishiteta-list-mode'.")
+
+(define-derived-mode nanishiteta-list-mode nil "Nanishiteta"
+  "Major mode of the buffer showing what you were doing.
+
+The upper list holds directories where terminals were started or
+files changed from outside; the lower list holds files you visited
+or saved.  The right columns are how many days ago each was last
+touched, and how many events it had.
+
+\\{nanishiteta-list-mode-map}"
+  (setq buffer-read-only t
+        truncate-lines t)
+  (add-hook 'window-size-change-functions #'nanishiteta--on-resize nil t))
+
+;;;###autoload
+(defun nanishiteta ()
+  "Show what you were doing over the last `nanishiteta-span-days' days."
+  (interactive)
+  (let ((buffer (get-buffer-create nanishiteta-buffer-name)))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'nanishiteta-list-mode)
+        (nanishiteta-list-mode))
+      (nanishiteta--load-exclude-file)
+      (setq nanishiteta--data (nanishiteta--collect)
+            nanishiteta--expanded nil))
+    (pop-to-buffer-same-window buffer)
+    (nanishiteta--render)
+    (goto-char (point-min))))
 
 (provide 'nanishiteta)
 
