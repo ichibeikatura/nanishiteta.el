@@ -1111,6 +1111,11 @@ touched, and how many events it had.
         truncate-lines t)
   (add-hook 'window-size-change-functions #'nanishiteta--on-resize nil t))
 
+(defun nanishiteta--goto-first-entry ()
+  "Move to the first row of the top list, or to the top of the buffer."
+  (let ((button (next-button (point-min))))
+    (goto-char (if button (button-start button) (point-min)))))
+
 ;;;###autoload
 (defun nanishiteta ()
   "Show what you were doing over the last `nanishiteta-span-days' days."
@@ -1125,7 +1130,7 @@ touched, and how many events it had.
             nanishiteta--annotations nil))
     (pop-to-buffer-same-window buffer)
     (nanishiteta--render)
-    (goto-char (point-min))))
+    (nanishiteta--goto-first-entry)))
 
 (provide 'nanishiteta)
 

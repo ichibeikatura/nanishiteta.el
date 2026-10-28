@@ -333,7 +333,9 @@ list of short strings, or nil.  Must not signal.")
 - 罫線の幅は `window-width` から生成し、`window-size-change-functions`
   で再描画する。ただし中身の幅は最大 80 桁とし、それより広いウィンドウでは
   左右に同じ幅の余白を取って中央に置く。右列がパスから離れすぎないため
-- バッファ名は `*nanishiteta*`、読み取り専用、point は先頭
+- バッファ名は `*nanishiteta*`、読み取り専用。開いた直後の point は最上段
+  セクションの1行目のボタン先頭（既定では worked in の一番上）。行が
+  一つも無ければバッファ先頭
 - 各エントリ行は `make-text-button` でボタンにする。これにより `TAB` /
   `S-TAB` の行間移動と `mouse-1` が自動的に効く
 

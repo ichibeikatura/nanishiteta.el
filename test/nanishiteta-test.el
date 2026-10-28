@@ -441,6 +441,18 @@
         (push (button-get button 'nanishiteta-path) paths))
       (should (= (length paths) 6)))))
 
+(ert-deftest nanishiteta-test-first-entry ()
+  (nanishiteta-test-with-buffer 7
+    (goto-char (point-max))
+    (nanishiteta--goto-first-entry)
+    (should (equal (button-get (button-at (point)) 'nanishiteta-path)
+                   "/home/user/src/notebook-api/")))
+  (let ((nanishiteta-sections '(nanishiteta-section-footer)))
+    (nanishiteta-test-with-buffer 7
+      (goto-char (point-max))
+      (nanishiteta--goto-first-entry)
+      (should (bobp)))))
+
 (ert-deftest nanishiteta-test-limit-folds ()
   (let ((nanishiteta-limit 2))
     (nanishiteta-test-with-buffer 7
